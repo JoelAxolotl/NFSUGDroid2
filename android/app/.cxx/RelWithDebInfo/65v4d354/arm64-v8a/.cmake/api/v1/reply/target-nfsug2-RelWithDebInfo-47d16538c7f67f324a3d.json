@@ -144,7 +144,11 @@
 				22,
 				23,
 				24,
-				25
+				25,
+				26,
+				27,
+				28,
+				29
 			],
 			"sysroot" : 
 			{
@@ -240,7 +244,11 @@
 				22,
 				23,
 				24,
-				25
+				25,
+				26,
+				27,
+				28,
+				29
 			]
 		}
 	],
@@ -303,7 +311,31 @@
 		{
 			"backtrace" : 1,
 			"compileGroupIndex" : 0,
+			"path" : "gfx/d3d9_draw.cpp",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 1,
+			"compileGroupIndex" : 0,
+			"path" : "gfx/ffp.cpp",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 1,
+			"compileGroupIndex" : 0,
 			"path" : "gfx/gl_context.cpp",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 1,
+			"compileGroupIndex" : 0,
+			"path" : "gfx/shader_translator.cpp",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 1,
+			"compileGroupIndex" : 0,
+			"path" : "gfx/texconv.cpp",
 			"sourceGroupIndex" : 0
 		},
 		{

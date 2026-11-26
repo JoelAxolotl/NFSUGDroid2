@@ -5,6 +5,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.util.SparseIntArray;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -41,14 +42,21 @@ public class GamepadOverlayView extends View {
     }
 
     private final Btn[] btns = {
+            // Driving
             new Btn("GAS", 0, 2, 0.905f, 0.72f, 0.125f),
             new Btn("BRAKE", 0, 1, 0.745f, 0.80f, 0.105f),
             new Btn("NOS", NativeBridge.BTN_A, 0, 0.935f, 0.42f, 0.075f),
             new Btn("E-BRK", NativeBridge.BTN_X, 0, 0.815f, 0.52f, 0.075f),
-            new Btn("CAM", NativeBridge.BTN_Y, 0, 0.815f, 0.13f, 0.06f),
-            new Btn("BACK", NativeBridge.BTN_B, 0, 0.935f, 0.13f, 0.06f),
             new Btn("◀ GEAR", NativeBridge.BTN_LB, 0, 0.065f, 0.13f, 0.06f),
             new Btn("GEAR ▶", NativeBridge.BTN_RB, 0, 0.185f, 0.13f, 0.06f),
+            new Btn("CAM", NativeBridge.BTN_Y, 0, 0.815f, 0.13f, 0.06f),
+            // Menus: OK = Enter, BACK = Esc, D-pad = arrow keys
+            new Btn("OK", NativeBridge.BTN_OK, 0, 0.695f, 0.13f, 0.065f),
+            new Btn("BACK", NativeBridge.BTN_B, 0, 0.935f, 0.13f, 0.06f),
+            new Btn("▲", NativeBridge.BTN_DPAD_UP, 0, 0.115f, 0.36f, 0.055f),
+            new Btn("▼", NativeBridge.BTN_DPAD_DOWN, 0, 0.115f, 0.58f, 0.055f),
+            new Btn("◀", NativeBridge.BTN_DPAD_LEFT, 0, 0.055f, 0.47f, 0.055f),
+            new Btn("▶", NativeBridge.BTN_DPAD_RIGHT, 0, 0.175f, 0.47f, 0.055f),
             new Btn("❚❚", NativeBridge.BTN_START, 0, 0.50f, 0.09f, 0.055f),
     };
 
@@ -112,10 +120,14 @@ public class GamepadOverlayView extends View {
         owner.delete(pointerId);
     }
 
+    private void pressButton(Btn b) {
+        if (b.pressCount++ == 0) performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+    }
+
     private void press(int pointerId, float x, float y) {
         Btn b = hit(x, y);
         if (b != null) {
-            b.pressCount++;
+            pressButton(b);
             owner.put(pointerId, indexOf(b));
         } else if (x < getWidth() * 0.5f && y > getHeight() * 0.25f && stickPointer < 0) {
             stickPointer = pointerId;
@@ -141,7 +153,7 @@ public class GamepadOverlayView extends View {
             if (now != btns[o]) {
                 btns[o].pressCount--;
                 if (now != null) {
-                    now.pressCount++;
+                    pressButton(now);
                     owner.put(pointerId, indexOf(now));
                 } else {
                     owner.put(pointerId, OWNER_NONE);
@@ -150,7 +162,7 @@ public class GamepadOverlayView extends View {
         } else if (o == OWNER_NONE) {
             Btn now = hit(x, y);
             if (now != null) {
-                now.pressCount++;
+                pressButton(now);
                 owner.put(pointerId, indexOf(now));
             }
         }
@@ -234,7 +246,8 @@ public class GamepadOverlayView extends View {
         } else {
             // Hint where the stick lives.
             stroke.setColor(Color.argb(60, 255, 255, 255));
-            c.drawCircle(getWidth() * 0.17f, getHeight() * 0.70f, stickR, stroke);
+            c.drawCircle(getWidth() * 0.27f, getHeight() * 0.74f, stickR, stroke);
+            c.drawText("STEER", getWidth() * 0.27f, getHeight() * 0.74f, text);
         }
     }
 }

@@ -121,9 +121,41 @@ build CMakeFiles/nfsug2.dir/gfx/d3d9.cpp.o: CXX_COMPILER__nfsug2_RelWithDebInfo 
   OBJECT_DIR = CMakeFiles\nfsug2.dir
   OBJECT_FILE_DIR = CMakeFiles\nfsug2.dir\gfx
 
+build CMakeFiles/nfsug2.dir/gfx/d3d9_draw.cpp.o: CXX_COMPILER__nfsug2_RelWithDebInfo E$:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/d3d9_draw.cpp || cmake_object_order_depends_target_nfsug2
+  DEFINES = -Dnfsug2_EXPORTS
+  DEP_FILE = CMakeFiles\nfsug2.dir\gfx\d3d9_draw.cpp.o.d
+  FLAGS = -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++20 -fno-exceptions -fno-rtti -O2 -g -DNDEBUG -fPIC -O2 -Wall -Wno-unused-function -fno-strict-aliasing -fvisibility=hidden -std=c++20
+  INCLUDES = -IE:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp
+  OBJECT_DIR = CMakeFiles\nfsug2.dir
+  OBJECT_FILE_DIR = CMakeFiles\nfsug2.dir\gfx
+
+build CMakeFiles/nfsug2.dir/gfx/ffp.cpp.o: CXX_COMPILER__nfsug2_RelWithDebInfo E$:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/ffp.cpp || cmake_object_order_depends_target_nfsug2
+  DEFINES = -Dnfsug2_EXPORTS
+  DEP_FILE = CMakeFiles\nfsug2.dir\gfx\ffp.cpp.o.d
+  FLAGS = -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++20 -fno-exceptions -fno-rtti -O2 -g -DNDEBUG -fPIC -O2 -Wall -Wno-unused-function -fno-strict-aliasing -fvisibility=hidden -std=c++20
+  INCLUDES = -IE:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp
+  OBJECT_DIR = CMakeFiles\nfsug2.dir
+  OBJECT_FILE_DIR = CMakeFiles\nfsug2.dir\gfx
+
 build CMakeFiles/nfsug2.dir/gfx/gl_context.cpp.o: CXX_COMPILER__nfsug2_RelWithDebInfo E$:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/gl_context.cpp || cmake_object_order_depends_target_nfsug2
   DEFINES = -Dnfsug2_EXPORTS
   DEP_FILE = CMakeFiles\nfsug2.dir\gfx\gl_context.cpp.o.d
+  FLAGS = -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++20 -fno-exceptions -fno-rtti -O2 -g -DNDEBUG -fPIC -O2 -Wall -Wno-unused-function -fno-strict-aliasing -fvisibility=hidden -std=c++20
+  INCLUDES = -IE:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp
+  OBJECT_DIR = CMakeFiles\nfsug2.dir
+  OBJECT_FILE_DIR = CMakeFiles\nfsug2.dir\gfx
+
+build CMakeFiles/nfsug2.dir/gfx/shader_translator.cpp.o: CXX_COMPILER__nfsug2_RelWithDebInfo E$:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/shader_translator.cpp || cmake_object_order_depends_target_nfsug2
+  DEFINES = -Dnfsug2_EXPORTS
+  DEP_FILE = CMakeFiles\nfsug2.dir\gfx\shader_translator.cpp.o.d
+  FLAGS = -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++20 -fno-exceptions -fno-rtti -O2 -g -DNDEBUG -fPIC -O2 -Wall -Wno-unused-function -fno-strict-aliasing -fvisibility=hidden -std=c++20
+  INCLUDES = -IE:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp
+  OBJECT_DIR = CMakeFiles\nfsug2.dir
+  OBJECT_FILE_DIR = CMakeFiles\nfsug2.dir\gfx
+
+build CMakeFiles/nfsug2.dir/gfx/texconv.cpp.o: CXX_COMPILER__nfsug2_RelWithDebInfo E$:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/texconv.cpp || cmake_object_order_depends_target_nfsug2
+  DEFINES = -Dnfsug2_EXPORTS
+  DEP_FILE = CMakeFiles\nfsug2.dir\gfx\texconv.cpp.o.d
   FLAGS = -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++20 -fno-exceptions -fno-rtti -O2 -g -DNDEBUG -fPIC -O2 -Wall -Wno-unused-function -fno-strict-aliasing -fvisibility=hidden -std=c++20
   INCLUDES = -IE:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp
   OBJECT_DIR = CMakeFiles\nfsug2.dir
@@ -265,7 +297,7 @@ build CMakeFiles/nfsug2.dir/runtime/vfs.cpp.o: CXX_COMPILER__nfsug2_RelWithDebIn
 #############################################
 # Link the shared library E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\build\intermediates\cxx\RelWithDebInfo\65v4d354\obj\arm64-v8a\libnfsug2.so
 
-build E$:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/build/intermediates/cxx/RelWithDebInfo/65v4d354/obj/arm64-v8a/libnfsug2.so: CXX_SHARED_LIBRARY_LINKER__nfsug2_RelWithDebInfo CMakeFiles/nfsug2.dir/jni_bridge.cpp.o CMakeFiles/nfsug2.dir/audio/dsound.cpp.o CMakeFiles/nfsug2.dir/core/guest_heap.cpp.o CMakeFiles/nfsug2.dir/core/log.cpp.o CMakeFiles/nfsug2.dir/core/memory.cpp.o CMakeFiles/nfsug2.dir/cpu/interp.cpp.o CMakeFiles/nfsug2.dir/cpu/mmx.cpp.o CMakeFiles/nfsug2.dir/cpu/x87.cpp.o CMakeFiles/nfsug2.dir/gfx/d3d9.cpp.o CMakeFiles/nfsug2.dir/gfx/gl_context.cpp.o CMakeFiles/nfsug2.dir/hle/advapi32.cpp.o CMakeFiles/nfsug2.dir/hle/com.cpp.o CMakeFiles/nfsug2.dir/hle/ddraw.cpp.o CMakeFiles/nfsug2.dir/hle/dinput8.cpp.o CMakeFiles/nfsug2.dir/hle/kernel32_core.cpp.o CMakeFiles/nfsug2.dir/hle/kernel32_file.cpp.o CMakeFiles/nfsug2.dir/hle/kobjects.cpp.o CMakeFiles/nfsug2.dir/hle/misc_dlls.cpp.o CMakeFiles/nfsug2.dir/hle/thunks.cpp.o CMakeFiles/nfsug2.dir/hle/user32.cpp.o CMakeFiles/nfsug2.dir/loader/pe_loader.cpp.o CMakeFiles/nfsug2.dir/platform/input.cpp.o CMakeFiles/nfsug2.dir/platform/window.cpp.o CMakeFiles/nfsug2.dir/runtime/aot.cpp.o CMakeFiles/nfsug2.dir/runtime/process.cpp.o CMakeFiles/nfsug2.dir/runtime/vfs.cpp.o
+build E$:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/build/intermediates/cxx/RelWithDebInfo/65v4d354/obj/arm64-v8a/libnfsug2.so: CXX_SHARED_LIBRARY_LINKER__nfsug2_RelWithDebInfo CMakeFiles/nfsug2.dir/jni_bridge.cpp.o CMakeFiles/nfsug2.dir/audio/dsound.cpp.o CMakeFiles/nfsug2.dir/core/guest_heap.cpp.o CMakeFiles/nfsug2.dir/core/log.cpp.o CMakeFiles/nfsug2.dir/core/memory.cpp.o CMakeFiles/nfsug2.dir/cpu/interp.cpp.o CMakeFiles/nfsug2.dir/cpu/mmx.cpp.o CMakeFiles/nfsug2.dir/cpu/x87.cpp.o CMakeFiles/nfsug2.dir/gfx/d3d9.cpp.o CMakeFiles/nfsug2.dir/gfx/d3d9_draw.cpp.o CMakeFiles/nfsug2.dir/gfx/ffp.cpp.o CMakeFiles/nfsug2.dir/gfx/gl_context.cpp.o CMakeFiles/nfsug2.dir/gfx/shader_translator.cpp.o CMakeFiles/nfsug2.dir/gfx/texconv.cpp.o CMakeFiles/nfsug2.dir/hle/advapi32.cpp.o CMakeFiles/nfsug2.dir/hle/com.cpp.o CMakeFiles/nfsug2.dir/hle/ddraw.cpp.o CMakeFiles/nfsug2.dir/hle/dinput8.cpp.o CMakeFiles/nfsug2.dir/hle/kernel32_core.cpp.o CMakeFiles/nfsug2.dir/hle/kernel32_file.cpp.o CMakeFiles/nfsug2.dir/hle/kobjects.cpp.o CMakeFiles/nfsug2.dir/hle/misc_dlls.cpp.o CMakeFiles/nfsug2.dir/hle/thunks.cpp.o CMakeFiles/nfsug2.dir/hle/user32.cpp.o CMakeFiles/nfsug2.dir/loader/pe_loader.cpp.o CMakeFiles/nfsug2.dir/platform/input.cpp.o CMakeFiles/nfsug2.dir/platform/window.cpp.o CMakeFiles/nfsug2.dir/runtime/aot.cpp.o CMakeFiles/nfsug2.dir/runtime/process.cpp.o CMakeFiles/nfsug2.dir/runtime/vfs.cpp.o
   LANGUAGE_COMPILE_FLAGS = -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++20 -fno-exceptions -fno-rtti -O2 -g -DNDEBUG
   LINK_FLAGS = -static-libstdc++ -Wl,--build-id=sha1 -Wl,--no-rosegment -Wl,--no-undefined-version -Wl,--fatal-warnings -Wl,--no-undefined -Qunused-arguments  -Wl,--gc-sections   -Wl,--no-gc-sections
   LINK_LIBRARIES = -landroid  -llog  -lEGL  -lGLESv3  -laaudio  -latomic -lm

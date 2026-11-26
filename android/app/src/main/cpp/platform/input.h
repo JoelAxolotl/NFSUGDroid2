@@ -9,6 +9,7 @@ enum Button : uint32_t {
     kDpadUp = 0x0001, kDpadDown = 0x0002, kDpadLeft = 0x0004, kDpadRight = 0x0008,
     kStart = 0x0010, kBack = 0x0020, kLThumb = 0x0040, kRThumb = 0x0080,
     kLB = 0x0100, kRB = 0x0200, kA = 0x1000, kB = 0x2000, kX = 0x4000, kY = 0x8000,
+    kOk = 0x10000,  // touch overlay "OK": Enter only (not a joystick button)
 };
 
 struct Pad {
@@ -26,5 +27,23 @@ Pad merged();
 
 void set_key(int dik, bool down);
 void keyboard(uint8_t out[256]);  // DirectInput layout: 0x80 = pressed
+
+// Keyboard as the game sees it: physical keys plus gamepad/touch buttons
+// mirrored onto the keys NFSU2 uses for menus and default driving controls.
+void game_keys(uint8_t out[256]);
+
+// Windows virtual-key code for a DIK scan code (0 if unmapped).
+uint32_t dik_to_vk(int dik);
+
+// Key transitions of game_keys(), logged as they happen so that presses
+// shorter than a consumer's polling interval are never lost. Each consumer
+// (user32 message pump, DirectInput keyboard) keeps its own cursor; a cursor
+// of 0 starts at the current end of the log.
+struct KeyEvent {
+    uint64_t seq;
+    uint8_t dik;
+    bool down;
+};
+bool next_key_event(uint64_t* cursor, KeyEvent* out);
 
 }  // namespace input

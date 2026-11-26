@@ -11,6 +11,7 @@
 
 #include "hle/hle.h"
 #include "hle/win_util.h"
+#include "platform/input.h"
 
 using namespace hle;
 using winu::gstr;
@@ -43,6 +44,34 @@ int32_t g_cursor_count = 0;
 constexpr uint32_t kDesktopHwnd = 0x00010010;
 
 uint32_t now_ms() { return (uint32_t)(winu::mono_ns() / 1000000ull); }
+
+// Turns queued key transitions (physical keys and pad-mirrored keys) into
+// WM_KEYDOWN / WM_KEYUP / WM_CHAR for the game window. Called with g_mu held.
+void pump_keyboard_locked(uint32_t hwnd) {
+    if (!hwnd) return;
+    uint32_t t = now_ms();
+    static uint64_t cursor = 0;
+    input::KeyEvent ev;
+    while (input::next_key_event(&cursor, &ev)) {
+        int dik = ev.dik;
+        bool down = ev.down;
+        uint32_t vk = input::dik_to_vk(dik);
+        if (!vk) continue;
+        uint32_t lp = 1u | ((uint32_t)(dik & 0x7F) << 16) | (dik >= 0x80 ? (1u << 24) : 0);
+        bool sys = vk == 0x12;  // Alt keys arrive as WM_SYSKEY*
+        LOGI("input: post %s vk=%02x to hwnd %08x", down ? "KEYDOWN" : "KEYUP", vk, hwnd);
+        if (down) {
+            g_queue.push_back({hwnd, sys ? 0x104u : 0x100u, vk, lp, t});
+            uint32_t ch = 0;
+            if (vk == 0x0D || vk == 0x1B || vk == 0x20 || vk == 0x08 || vk == 0x09) ch = vk;
+            else if (vk >= 'A' && vk <= 'Z') ch = vk + 32;
+            else if (vk >= '0' && vk <= '9') ch = vk;
+            if (ch && !sys) g_queue.push_back({hwnd, 0x102u, ch, lp, t});
+        } else {
+            g_queue.push_back({hwnd, sys ? 0x105u : 0x101u, vk, lp | (1u << 30) | (1u << 31), t});
+        }
+    }
+}
 
 std::string lower(std::string s) {
     for (char& ch : s) ch = (char)tolower((unsigned char)ch);
@@ -256,6 +285,7 @@ HLE_EXPORT(user32, DefWindowProcA, 16) {
 HLE_EXPORT(user32, PeekMessageA, 20) {
     uint32_t out = arg(c, 0), remove = arg(c, 4);
     std::lock_guard<std::mutex> lk(g_mu);
+    pump_keyboard_locked(g_main_hwnd);
     if (g_queue.empty()) return ret(c, 0);
     const Msg& m = g_queue.front();
     mem::wr32(out + 0, m.hwnd);
@@ -271,7 +301,11 @@ HLE_EXPORT(user32, PeekMessageA, 20) {
 HLE_EXPORT(user32, GetMessageA, 16) {
     uint32_t out = arg(c, 0);
     std::unique_lock<std::mutex> lk(g_mu);
-    g_cv.wait(lk, [] { return !g_queue.empty(); });
+    for (;;) {
+        pump_keyboard_locked(g_main_hwnd);
+        if (!g_queue.empty()) break;
+        g_cv.wait_for(lk, std::chrono::milliseconds(10));
+    }
     Msg m = g_queue.front();
     g_queue.pop_front();
     mem::wr32(out + 0, m.hwnd);
@@ -284,7 +318,11 @@ HLE_EXPORT(user32, GetMessageA, 16) {
 HLE_EXPORT(user32, TranslateMessage, 4) { ret(c, 1); }
 HLE_EXPORT(user32, DispatchMessageA, 4) {
     uint32_t m = arg(c, 0);
-    uint32_t r = send(c, mem::rd32(m), mem::rd32(m + 4), mem::rd32(m + 8), mem::rd32(m + 12));
+    uint32_t msg = mem::rd32(m + 4);
+    uint32_t r = send(c, mem::rd32(m), msg, mem::rd32(m + 8), mem::rd32(m + 12));
+    if (msg >= 0x100 && msg <= 0x105)
+        LOGI("input: dispatched msg %03x vk=%02x hwnd %08x -> wndproc %08x returned %u", msg, mem::rd32(m + 8),
+             mem::rd32(m), wndproc_of(mem::rd32(m)), r);
     if (c.stop != cpu::Stop::None) return;
     ret(c, r);
 }

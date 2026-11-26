@@ -99,7 +99,8 @@ void present(GLuint src_fbo, int src_w, int src_h) {
     else
         dh = (int)((float)g_w / sa + 0.5f);
     int dx = (g_w - dw) / 2, dy = (g_h - dh) / 2;
-    glBlitFramebuffer(0, 0, src_w, src_h, dx, dy, dx + dw, dy + dh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    // Frames are stored top-down (D3D row 0 first); flip into the bottom-up window.
+    glBlitFramebuffer(0, 0, src_w, src_h, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     if (!eglSwapBuffers(g_dpy, g_surf)) {
         EGLint e = eglGetError();
         LOGW("eglSwapBuffers failed: %x", e);

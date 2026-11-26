@@ -1,43 +1,8 @@
 ninja: Entering directory `E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\.cxx\RelWithDebInfo\65v4d354\arm64-v8a'
 [0/2] Re-checking globbed directories...
-[1/2] Re-running CMake...
--- Configuring done
--- Generating done
--- Build files have been written to: E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/.cxx/RelWithDebInfo/65v4d354/arm64-v8a
-[0/2] Re-checking globbed directories...
-[1/21] Building CXX object CMakeFiles/nfsug2.dir/runtime/aot.cpp.o
-[2/21] Building CXX object CMakeFiles/nfsug2.dir/loader/pe_loader.cpp.o
-[3/21] Building CXX object CMakeFiles/nfsug2.dir/audio/dsound.cpp.o
-E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/audio/dsound.cpp:25:64: warning: unused variable 'DSERR_UNSUPPORTED' [-Wunused-const-variable]
-   25 | constexpr uint32_t DS_OK = 0, DSERR_INVALIDPARAM = 0x80070057, DSERR_UNSUPPORTED = 0x80004001,
-      |                                                                ^~~~~~~~~~~~~~~~~
+[1/2] Building CXX object CMakeFiles/nfsug2.dir/hle/dinput8.cpp.o
+E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/hle/dinput8.cpp:25:52: warning: unused variable 'DIERR_NOTACQUIRED' [-Wunused-const-variable]
+   25 |                    DIERR_UNSUPPORTED = 0x80004001, DIERR_NOTACQUIRED = 0x8007000C;
+      |                                                    ^~~~~~~~~~~~~~~~~
 1 warning generated.
-[4/21] Building CXX object CMakeFiles/nfsug2.dir/runtime/vfs.cpp.o
-[5/21] Building CXX object CMakeFiles/nfsug2.dir/jni_bridge.cpp.o
-[6/21] Building CXX object CMakeFiles/nfsug2.dir/runtime/process.cpp.o
-[7/21] Building CXX object CMakeFiles/nfsug2.dir/cpu/x87.cpp.o
-[8/21] Building CXX object CMakeFiles/nfsug2.dir/hle/kernel32_file.cpp.o
-[9/21] Building CXX object CMakeFiles/nfsug2.dir/hle/kobjects.cpp.o
-[10/21] Building CXX object CMakeFiles/nfsug2.dir/hle/thunks.cpp.o
-[11/21] Building CXX object CMakeFiles/nfsug2.dir/cpu/interp.cpp.o
-[12/21] Building CXX object CMakeFiles/nfsug2.dir/hle/misc_dlls.cpp.o
-[13/21] Building CXX object CMakeFiles/nfsug2.dir/hle/kernel32_core.cpp.o
-[14/21] Building CXX object CMakeFiles/nfsug2.dir/cpu/mmx.cpp.o
-[15/21] Building CXX object CMakeFiles/nfsug2.dir/gfx/d3d9.cpp.o
-[16/21] Building CXX object CMakeFiles/nfsug2.dir/hle/user32.cpp.o
-E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/hle/user32.cpp:20:20: warning: unused variable 'WM_KILLFOCUS' [-Wunused-const-variable]
-   20 |                    WM_KILLFOCUS = 0x08, WM_CLOSE = 0x10, WM_QUIT = 0x12, WM_SHOWWINDOW = 0x18,
-      |                    ^~~~~~~~~~~~
-1 warning generated.
-[17/21] Building CXX object CMakeFiles/nfsug2.dir/hle/dinput8.cpp.o
-[18/21] Building CXX object CMakeFiles/nfsug2.dir/hle/ddraw.cpp.o
-[19/21] Building CXX object CMakeFiles/nfsug2.dir/hle/com.cpp.o
-[20/21] Building CXX object CMakeFiles/nfsug2.dir/hle/advapi32.cpp.o
-E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/hle/advapi32.cpp:17:32: warning: unused variable 'REG_BINARY' [-Wunused-const-variable]
-   17 | constexpr uint32_t REG_SZ = 1, REG_BINARY = 3, REG_DWORD = 4;
-      |                                ^~~~~~~~~~
-E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/hle/advapi32.cpp:17:48: warning: unused variable 'REG_DWORD' [-Wunused-const-variable]
-   17 | constexpr uint32_t REG_SZ = 1, REG_BINARY = 3, REG_DWORD = 4;
-      |                                                ^~~~~~~~~
-2 warnings generated.
-[21/21] Linking CXX shared library E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\build\intermediates\cxx\RelWithDebInfo\65v4d354\obj\arm64-v8a\libnfsug2.so
+[2/2] Linking CXX shared library E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\build\intermediates\cxx\RelWithDebInfo\65v4d354\obj\arm64-v8a\libnfsug2.so

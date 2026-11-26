@@ -2,10 +2,10 @@
 // Ahead-of-time translated code registry.
 //
 // tools/recomp translates guest functions of SPEED2.EXE to C++ that operates on
-// cpu::Cpu and links them into this library. Each translated function runs
-// until the guest function returns (EIP = return address) or until it reaches
-// code it could not translate (it then sets EIP there and returns), so the
-// interpreter and translated code can hand off at any instruction boundary.
+// cpu::Cpu (generated/*.cpp, linked into this library). A translated function
+// runs until the guest function returns (EIP = return address) or until it
+// reaches control flow it cannot follow (it then leaves EIP there and returns),
+// so interpreted and translated code hand off at instruction boundaries.
 #include <cstdint>
 
 #include "cpu/cpu.h"
@@ -19,17 +19,33 @@ struct Entry {
     Fn fn;
 };
 
-// Registers a generated table (called by the generated translation unit).
+// Covers the executable image; must run before any guest code.
+void init(uint32_t code_start, uint32_t code_end);
+
+// Registers a generated table (called from generated code at load time).
 void register_table(const Entry* entries, uint32_t count);
 
+namespace detail {
+extern Fn* g_table;
+extern uint8_t* g_seen;
+extern uint32_t g_start, g_size;
+}  // namespace detail
+
 // Translated function for this guest address, or null.
-Fn lookup(uint32_t guest_eip);
+inline Fn lookup(uint32_t eip) {
+    uint32_t off = eip - detail::g_start;
+    return off < detail::g_size ? detail::g_table[off] : nullptr;
+}
 
-// Diagnostics: counts interpreter entries at addresses without translations
-// so the recompiler can be seeded with them (written to <user>/aot_misses.txt).
-void note_miss(uint32_t guest_eip);
-void dump_misses(const char* path);
+// Profiling: function entries executed by the interpreter (call targets).
+inline void note_call(uint32_t target) {
+    uint32_t off = target - detail::g_start;
+    if (off < detail::g_size) detail::g_seen[off] = 1;
+}
 
-bool enabled();
+// Writes the profile (one hex address per line), merged with the existing file.
+void dump_profile(const char* path);
+
+uint32_t translated_count();
 
 }  // namespace aot

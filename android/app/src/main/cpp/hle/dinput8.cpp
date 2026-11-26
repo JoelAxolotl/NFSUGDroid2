@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 #include "hle/com.h"
 #include "hle/hle.h"
@@ -40,15 +41,23 @@ enum class Kind { Keyboard, Mouse, Pad };
 
 struct DInput : com::Object {};
 
+// One action bound by SetActionMap: the game's uAppData for a device object.
+struct BoundAction {
+    uint32_t app_data;
+    uint32_t object;  // keyboard: DIK code
+};
+
 struct Device : com::Object {
     Kind kind = Kind::Keyboard;
     bool acquired = false;
     uint32_t data_size = 0;  // from SetDataFormat
     int32_t range_min[8], range_max[8];
     uint32_t deadzone = 0;
-    uint8_t last_keys[256] = {};
+    uint64_t key_cursor = 0;  // position in the input::next_key_event log
     uint32_t sequence = 0;
     uint32_t buffer_size = 0;
+    std::vector<BoundAction> actions;  // action-mapped devices (SetActionMap)
+    bool action_mapped = false;
     Device() {
         for (int i = 0; i < 8; ++i) {
             range_min[i] = 0;
@@ -58,27 +67,6 @@ struct Device : com::Object {
 };
 
 void write_guid(uint32_t p, const uint32_t g[4]) { memcpy(mem::ptr(p), g, 16); }
-
-// Keyboard as the game sees it: physical keys plus pad-mirrored keys.
-void keyboard_state(uint8_t keys[256]) {
-    input::keyboard(keys);
-    input::Pad p = input::merged();
-    auto press = [&](int dik, bool on) {
-        if (on) keys[dik] = 0x80;
-    };
-    press(0xC8, (p.buttons & input::kDpadUp) || p.ly < -0.5f || p.rt > 0.3f);   // Up: menus / throttle
-    press(0xD0, (p.buttons & input::kDpadDown) || p.ly > 0.5f || p.lt > 0.3f);  // Down: menus / brake
-    press(0xCB, (p.buttons & input::kDpadLeft) || p.lx < -0.35f);               // Left
-    press(0xCD, (p.buttons & input::kDpadRight) || p.lx > 0.35f);               // Right
-    press(0x1C, p.buttons & input::kA);                                         // Enter: accept
-    press(0x01, (p.buttons & input::kB) || (p.buttons & input::kStart));        // Esc: back / pause
-    press(0x39, p.buttons & input::kX);                                         // Space: e-brake
-    press(0x38, p.buttons & input::kA);                                         // Left Alt: nitrous
-    press(0x2E, p.buttons & input::kY);                                         // C: camera
-    press(0x2D, p.buttons & input::kBack);                                      // X: look back
-    press(0x2C, p.buttons & input::kLB);                                        // Z: shift down
-    press(0x1E, p.buttons & input::kRB);                                        // A: shift up
-}
 
 int32_t scale_axis(const Device* d, int axis, float v /* -1..1 */) {
     float t = (v + 1.0f) * 0.5f;
@@ -193,6 +181,7 @@ void di_EnumDevices(cpu::Cpu& c) {
     ret(c, DI_OK);
 }
 void di_GetDeviceStatus(cpu::Cpu& c) { ret(c, DI_OK); }
+void di_EnumDevicesBySemantics(cpu::Cpu& c);
 void di_Initialize(cpu::Cpu& c) { ret(c, DI_OK); }
 
 const com::Method kDInputMethods[] = {
@@ -205,7 +194,7 @@ const com::Method kDInputMethods[] = {
     {"IDirectInput8A::RunControlPanel", 12, nullptr, 0},
     {"IDirectInput8A::Initialize", 12, di_Initialize, 0},
     {"IDirectInput8A::FindDevice", 16, nullptr, DIERR_NOTFOUND},
-    {"IDirectInput8A::EnumDevicesBySemantics", 24, nullptr, DIERR_UNSUPPORTED},
+    {"IDirectInput8A::EnumDevicesBySemantics", 24, di_EnumDevicesBySemantics, 0},
     {"IDirectInput8A::ConfigureDevices", 20, nullptr, DIERR_UNSUPPORTED},
 };
 
@@ -327,11 +316,13 @@ void dev_Unacquire(cpu::Cpu& c) {
 void dev_GetDeviceState(cpu::Cpu& c) {
     Device* d = dv(c);
     uint32_t size = arg(c, 1), out = arg(c, 2);
-    if (!d->acquired) return ret(c, DIERR_NOTACQUIRED);
+    // The game reads its joystick without ever calling Acquire (and only re-acquires
+    // on DIERR_INPUTLOST), so reading acquires implicitly; nothing else owns the device.
+    d->acquired = true;
     switch (d->kind) {
         case Kind::Keyboard: {
             uint8_t keys[256];
-            keyboard_state(keys);
+            input::game_keys(keys);
             memcpy(mem::ptr(out), keys, std::min<uint32_t>(size, 256));
             break;
         }
@@ -341,29 +332,42 @@ void dev_GetDeviceState(cpu::Cpu& c) {
     ret(c, DI_OK);
 }
 void dev_GetDeviceData(cpu::Cpu& c) {
-    // Buffered input: report keyboard transitions since the last call.
+    // Buffered input: keyboard transitions from the input event log. For an
+    // action-mapped device each event carries the game's uAppData (one event
+    // per action bound to that key); unmapped keys are not reported.
     Device* d = dv(c);
     uint32_t objsize = arg(c, 1), out = arg(c, 2), pinout = arg(c, 3), flags = arg(c, 4);
-    if (!d->acquired) return ret(c, DIERR_NOTACQUIRED);
+    // The game reads its joystick without ever calling Acquire (and only re-acquires
+    // on DIERR_INPUTLOST), so reading acquires implicitly; nothing else owns the device.
+    d->acquired = true;
     uint32_t cap = mem::rd32(pinout), n = 0;
     if (d->kind == Kind::Keyboard) {
-        uint8_t keys[256];
-        keyboard_state(keys);
         uint32_t now = (uint32_t)(winu::mono_ns() / 1000000ull);
         bool peek = flags & 1;  // DIGDD_PEEK
-        for (uint32_t k = 0; k < 256 && (n < cap || !out); ++k) {
-            if ((keys[k] & 0x80) == (d->last_keys[k] & 0x80)) continue;
+        uint64_t cursor = d->key_cursor;
+        input::KeyEvent ev;
+        auto emit = [&](uint32_t ofs, uint32_t data, uint32_t app) {
             if (out) {
                 uint32_t e = out + n * objsize;
                 memset(mem::ptr(e), 0, objsize);
-                mem::wr32(e + 0, k);
-                mem::wr32(e + 4, keys[k]);
+                mem::wr32(e + 0, ofs);
+                mem::wr32(e + 4, data);
                 mem::wr32(e + 8, now);
                 mem::wr32(e + 12, d->sequence++);
+                if (objsize >= 20) mem::wr32(e + 16, app);
             }
-            if (!peek) d->last_keys[k] = keys[k];
             ++n;
+        };
+        while ((n < cap || !out) && input::next_key_event(&cursor, &ev)) {
+            uint32_t data = ev.down ? 0x80 : 0;
+            if (d->action_mapped) {
+                for (const BoundAction& a : d->actions)
+                    if (a.object == ev.dik && (n < cap || !out)) emit(ev.dik, data, a.app_data);
+            } else {
+                emit(ev.dik, data, 0xFFFFFFFFu);
+            }
         }
+        if (!peek) d->key_cursor = cursor;
     }
     mem::wr32(pinout, n);
     ret(c, DI_OK);
@@ -388,6 +392,139 @@ void dev_GetDeviceInfo(cpu::Cpu& c) {
     ret(c, DI_OK);
 }
 void dev_ok(cpu::Cpu& c) { ret(c, DI_OK); }
+
+// ---------------------------------------------------------------- objects / action mapping
+const uint32_t GUID_Key[4] = {0x55728220, 0x11CFD33C, 0x4544C7BF, 0x00005453};
+
+struct PadObject {
+    const uint32_t* guid;
+    uint32_t ofs, type;
+    const char* name;
+};
+const PadObject kPadObjects[] = {
+    {GUID_XAxis, 0, 0x00000002 | (0 << 8), "X Axis"},      {GUID_YAxis, 4, 0x00000002 | (1 << 8), "Y Axis"},
+    {GUID_ZAxis, 8, 0x00000002 | (2 << 8), "Z Axis"},      {GUID_RxAxis, 12, 0x00000002 | (3 << 8), "X Rotation"},
+    {GUID_RyAxis, 16, 0x00000002 | (4 << 8), "Y Rotation"}, {GUID_POV, 32, 0x00000010 | (0 << 8), "Hat Switch"},
+    {GUID_Button, 48, 0x0000000C | (0 << 8), "A"},          {GUID_Button, 49, 0x0000000C | (1 << 8), "B"},
+    {GUID_Button, 50, 0x0000000C | (2 << 8), "X"},          {GUID_Button, 51, 0x0000000C | (3 << 8), "Y"},
+    {GUID_Button, 52, 0x0000000C | (4 << 8), "LB"},         {GUID_Button, 53, 0x0000000C | (5 << 8), "RB"},
+    {GUID_Button, 54, 0x0000000C | (6 << 8), "Back"},       {GUID_Button, 55, 0x0000000C | (7 << 8), "Start"},
+    {GUID_Button, 56, 0x0000000C | (8 << 8), "LS"},         {GUID_Button, 57, 0x0000000C | (9 << 8), "RS"},
+};
+
+void fill_object(uint32_t p, const uint32_t* guid, uint32_t ofs, uint32_t type, const char* name) {
+    uint32_t cap = mem::rd32(p);
+    if (cap < 0x13C) cap = 0x13C;
+    memset(mem::ptr(p + 4), 0, std::min<uint32_t>(cap, 0x13C) - 4);
+    write_guid(p + 4, guid);
+    mem::wr32(p + 20, ofs);
+    mem::wr32(p + 24, type);
+    mem::write_cstr(p + 32, name, 260);
+}
+
+void dev_GetObjectInfo(cpu::Cpu& c) {
+    Device* d = dv(c);
+    uint32_t p = arg(c, 1), obj = arg(c, 2), how = arg(c, 3);
+    if (d->kind == Kind::Keyboard) {
+        uint32_t dik = how == 1 ? obj : (obj >> 8) & 0xFF;
+        if (dik == 0 || dik > 255) return ret(c, DIERR_NOTFOUND);
+        fill_object(p, GUID_Key, dik, 0x0000000C | (dik << 8), "Key");
+        return ret(c, DI_OK);
+    }
+    if (d->kind == Kind::Pad) {
+        for (const PadObject& o : kPadObjects) {
+            // DIPH_BYOFFSET: data-format offset; DIPH_BYID: same instance and type class.
+            bool match = how == 1 ? o.ofs == obj
+                                  : ((o.type >> 8) & 0xFFFF) == ((obj >> 8) & 0xFFFF) && (o.type & obj & 0xFF);
+            if (match) {
+                fill_object(p, o.guid, o.ofs, o.type, o.name);
+                return ret(c, DI_OK);
+            }
+        }
+    }
+    ret(c, DIERR_NOTFOUND);
+}
+
+// DIACTIONFORMATA: dwSize, dwActionSize, dwDataSize, dwNumActions, rgoAction, guidActionMap(16),
+// dwGenre @36, dwBufferSize @40. DIACTIONA (40 bytes): uAppData, dwSemantic, dwFlags, name,
+// guidInstance @16, dwObjID @32, dwHow @36.
+constexpr uint32_t DIA_APPMAPPED = 0x2, DIA_APPNOMAP = 0x4, DIAH_APPREQUESTED = 0x1, DIAH_DEFAULT = 0x20;
+
+void log_action_format(uint32_t f) {
+    uint32_t n = mem::rd32(f + 12), acts = mem::rd32(f + 16), asz = mem::rd32(f + 4);
+    LOGI("DirectInput action format: genre %08x, %u actions, buffer %u", mem::rd32(f + 36), n, mem::rd32(f + 40));
+    for (uint32_t i = 0; i < n && i < 128; ++i) {
+        uint32_t a = acts + i * asz;
+        LOGI("  action %2u: appdata %08x semantic %08x flags %x", i, mem::rd32(a), mem::rd32(a + 4), mem::rd32(a + 8));
+    }
+}
+
+// Binds keyboard semantics (DIKEYBOARD_* = 0x81000400 | DIK) to this keyboard.
+uint32_t build_keyboard_map(uint32_t f) {
+    uint32_t n = mem::rd32(f + 12), acts = mem::rd32(f + 16), asz = mem::rd32(f + 4), mapped = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t a = acts + i * asz;
+        uint32_t sem = mem::rd32(a + 4), fl = mem::rd32(a + 8);
+        if (fl & DIA_APPNOMAP) continue;
+        if ((fl & DIA_APPMAPPED) && com::guid_eq(a + 16, GUID_SysKeyboard)) {
+            mem::wr32(a + 36, DIAH_APPREQUESTED);
+            ++mapped;
+            continue;
+        }
+        if ((sem & 0xFF000000u) != 0x81000000u) continue;
+        uint32_t dik = sem & 0xFF;
+        if (!dik) continue;
+        write_guid(a + 16, GUID_SysKeyboard);
+        mem::wr32(a + 32, (dik << 8) | 0x0C);
+        mem::wr32(a + 36, DIAH_DEFAULT);
+        ++mapped;
+    }
+    return mapped;
+}
+
+void dev_BuildActionMap(cpu::Cpu& c) {
+    Device* d = dv(c);
+    uint32_t f = arg(c, 1);
+    uint32_t mapped = d->kind == Kind::Keyboard ? build_keyboard_map(f) : 0;
+    LOGI("DirectInput BuildActionMap: %u actions mapped to the %s", mapped,
+         d->kind == Kind::Keyboard ? "keyboard" : "device");
+    ret(c, mapped ? DI_OK : DI_NOEFFECT);
+}
+
+void dev_SetActionMap(cpu::Cpu& c) {
+    Device* d = dv(c);
+    uint32_t f = arg(c, 1);
+    uint32_t n = mem::rd32(f + 12), acts = mem::rd32(f + 16), asz = mem::rd32(f + 4);
+    d->actions.clear();
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t a = acts + i * asz;
+        if (!mem::rd32(a + 36)) continue;  // dwHow: not mapped
+        if (d->kind == Kind::Keyboard && com::guid_eq(a + 16, GUID_SysKeyboard))
+            d->actions.push_back({mem::rd32(a), (mem::rd32(a + 32) >> 8) & 0xFF});
+    }
+    d->action_mapped = true;
+    d->buffer_size = mem::rd32(f + 40);
+    LOGI("DirectInput SetActionMap: %zu keyboard bindings active", d->actions.size());
+    ret(c, DI_OK);
+}
+
+// EnumDevicesBySemantics(this, user, actionFormat, callback, ref, flags): offers the
+// system keyboard (created by DirectInput, passed to the callback) for action mapping.
+// The gamepad is read by the game through its own DirectInput joystick path.
+void di_EnumDevicesBySemantics(cpu::Cpu& c) {
+    uint32_t f = arg(c, 2), cb = arg(c, 3), ref = arg(c, 4);
+    if (f) log_action_format(f);
+    static const uint32_t inst = mem::alloc_system(kDevInstSize);
+    fill_instance(inst, GUID_SysKeyboard, GUID_SysKeyboard, 0x0413, "Keyboard");
+    Device* kb = new Device();
+    kb->kind = Kind::Keyboard;
+    com::wrap(kb, device_vtable());
+    uint32_t r = hle::call_guest(c, cb, {inst, kb->guest, 1u /* DIEDBS_MAPPEDPRI1 */, 0u, ref});
+    if (c.stop != cpu::Stop::None) return;
+    com::release(kb);  // the game AddRef'd it if it keeps the device
+    (void)r;
+    ret(c, DI_OK);
+}
 
 void dev_CreateEffect(cpu::Cpu& c) {
     uint32_t g = arg(c, 1), out = arg(c, 3);
@@ -446,7 +583,7 @@ const com::Method kDeviceMethods[] = {
     {"IDirectInputDevice8A::SetDataFormat", 8, dev_SetDataFormat, 0},
     {"IDirectInputDevice8A::SetEventNotification", 8, dev_ok, 0},
     {"IDirectInputDevice8A::SetCooperativeLevel", 12, dev_ok, 0},
-    {"IDirectInputDevice8A::GetObjectInfo", 16, nullptr, DIERR_UNSUPPORTED},
+    {"IDirectInputDevice8A::GetObjectInfo", 16, dev_GetObjectInfo, 0},
     {"IDirectInputDevice8A::GetDeviceInfo", 8, dev_GetDeviceInfo, 0},
     {"IDirectInputDevice8A::RunControlPanel", 12, nullptr, 0},
     {"IDirectInputDevice8A::Initialize", 16, dev_ok, 0},
@@ -461,8 +598,8 @@ const com::Method kDeviceMethods[] = {
     {"IDirectInputDevice8A::SendDeviceData", 20, nullptr, DIERR_UNSUPPORTED},
     {"IDirectInputDevice8A::EnumEffectsInFile", 20, nullptr, DIERR_UNSUPPORTED},
     {"IDirectInputDevice8A::WriteEffectToFile", 20, nullptr, DIERR_UNSUPPORTED},
-    {"IDirectInputDevice8A::BuildActionMap", 16, nullptr, DIERR_UNSUPPORTED},
-    {"IDirectInputDevice8A::SetActionMap", 16, nullptr, DIERR_UNSUPPORTED},
+    {"IDirectInputDevice8A::BuildActionMap", 16, dev_BuildActionMap, 0},
+    {"IDirectInputDevice8A::SetActionMap", 16, dev_SetActionMap, 0},
     {"IDirectInputDevice8A::GetImageInfo", 8, nullptr, DIERR_UNSUPPORTED},
 };
 

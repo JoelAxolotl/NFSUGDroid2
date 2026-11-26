@@ -49,7 +49,11 @@ endif()
 file(GLOB_RECURSE NEW_GLOB LIST_DIRECTORIES false "E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/*.cpp")
 set(OLD_GLOB
   "E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/d3d9.cpp"
+  "E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/d3d9_draw.cpp"
+  "E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/ffp.cpp"
   "E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/gl_context.cpp"
+  "E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/shader_translator.cpp"
+  "E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/src/main/cpp/gfx/texconv.cpp"
   )
 if(NOT "${NEW_GLOB}" STREQUAL "${OLD_GLOB}")
   message("-- GLOB mismatch!")

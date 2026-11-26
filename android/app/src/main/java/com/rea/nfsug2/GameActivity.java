@@ -27,6 +27,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback, Co
     private TextView hud;
     private ControllerInput controller;
     private boolean overlayEnabled;
+    private boolean exiting;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -74,10 +75,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback, Co
             hud.setText(NativeBridge.status());
             if (!NativeBridge.isRunning()) {
                 // The guest exited; give the user a moment to read the final status.
-                ui.postDelayed(() -> {
-                    finish();
-                    Process.killProcess(Process.myPid());
-                }, 4000);
+                // The process is killed in onDestroy, after the activity has left the
+                // task, so Android does not restart it.
+                exiting = true;
+                ui.postDelayed(GameActivity.this::finishAndRemoveTask, 4000);
                 return;
             }
             ui.postDelayed(this, 250);
@@ -96,6 +97,12 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback, Co
             c.hide(WindowInsets.Type.systemBars());
             c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (exiting) Process.killProcess(Process.myPid());
     }
 
     @Override

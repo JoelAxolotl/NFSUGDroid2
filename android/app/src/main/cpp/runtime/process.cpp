@@ -216,7 +216,7 @@ void exit_current_thread(cpu::Cpu& c, uint32_t code) {
 void exit_process(uint32_t code) {
     LOGI("ExitProcess(%u)", code);
     set_status("Game exited (code " + std::to_string(code) + ")");
-    aot::dump_misses((g_cfg.user_dir + "/aot_misses.txt").c_str());
+    aot::dump_profile((g_cfg.user_dir + "/aot_profile.txt").c_str());
     logx::flush();
     g_running = false;
     for (;;) pause();  // GameActivity notices !running() and ends the process
@@ -241,6 +241,8 @@ void spawn_helper(const char* name, std::function<void(cpu::Cpu&)> body) {
 bool boot(const Config& cfg, std::string& error) {
     g_cfg = cfg;
     mkdir(cfg.user_dir.c_str(), 0755);
+    // Keep the previous run's log: crashes that restart the activity would otherwise erase it.
+    rename((cfg.user_dir + "/log.txt").c_str(), (cfg.user_dir + "/log.prev.txt").c_str());
     logx::init((cfg.user_dir + "/log.txt").c_str());
     LOGI("NFSUG2 translation layer starting; game dir %s", cfg.game_dir.c_str());
 
@@ -258,6 +260,7 @@ bool boot(const Config& cfg, std::string& error) {
     std::string exe = vfs::to_host(std::string(kGameRootWin) + "\\" + kExeName);
     loader::Image img;
     if (!loader::load_exe(exe, img, error)) return false;
+    aot::init(img.text_start, img.text_end);
     setup_peb(img);
 
     Thread* main = new Thread();

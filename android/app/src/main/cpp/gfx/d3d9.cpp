@@ -1,144 +1,83 @@
-// Direct3D 9 on GLES 3.2.
+// Direct3D 9 on GLES 3.2 — COM front end.
 //
-// Phase 1 (this file): full COM surface of IDirect3D9 / IDirect3DDevice9 and
-// the resource interfaces, adapter enumeration and caps, device creation on
-// the guest's render thread, resources backed by guest memory for Lock,
-// complete state tracking, render targets, Clear and Present.
-// Phase 2: vertex/index upload, D3D shader bytecode -> GLSL ES translation,
-// fixed-function emulation, texture upload (DXT decode where unsupported) and
-// draw submission.
+// IDirect3D9 / IDirect3DDevice9 and the resource interfaces. Device state is
+// kept in d3d::State (d3d9_device.h); drawing lives in d3d9_draw.cpp.
+// Frames are stored top-down in GL (see d3d9_draw.cpp), so D3D rectangles map
+// to GL coordinates unchanged and only Present flips.
 #include <EGL/egl.h>
 #include <GLES3/gl32.h>
 
 #include <algorithm>
 #include <cstring>
-#include <map>
 #include <mutex>
 #include <vector>
 
 #include "core/guest_heap.h"
+#include "gfx/d3d9_device.h"
 #include "gfx/d3d9_types.h"
 #include "gfx/gl_context.h"
 #include "hle/com.h"
 #include "hle/hle.h"
 #include "hle/user32.h"
 #include "hle/win_util.h"
+#include "runtime/aot.h"
 #include "runtime/process.h"
 
 using namespace d3d;
 using hle::arg;
 using hle::ret;
 
+namespace d3d {
+
+void StateMask::set_all() {
+    rs.set();
+    ss.set();
+    tss.set();
+    textures.set();
+    streams.set();
+    indices = vdecl = vs = ps = viewport = scissor = material = true;
+    vs_f.set();
+    vs_i.set();
+    vs_b.set();
+    ps_f.set();
+    ps_i.set();
+    ps_b.set();
+    transforms.set();
+    lights.set();
+    clip.set();
+}
+
+// D3DSBT_PIXELSTATE / D3DSBT_VERTEXSTATE subsets (render-state lists per the D3D9 docs, abbreviated
+// to the pipeline halves they belong to).
+void StateMask::set_pixel() {
+    static const int kPixelRS[] = {7, 9, 14, 15, 16, 19, 20, 23, 24, 25, 26, 27, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+                                   128, 129, 130, 131, 132, 133, 134, 135, 168, 171, 174, 175, 176, 185, 186, 187,
+                                   188, 189, 190, 191, 192, 193, 194, 195, 206, 207, 208, 209, 34, 35, 36, 37, 38};
+    for (int r : kPixelRS) rs.set(r);
+    ss.set();
+    tss.set();
+    ps = true;
+    ps_f.set();
+    ps_i.set();
+    ps_b.set();
+}
+void StateMask::set_vertex() {
+    static const int kVertexRS[] = {22, 28, 29, 48, 136, 137, 139, 140, 141, 142, 143, 145, 146, 147, 148, 151, 152,
+                                    154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 165, 166, 167, 170, 172, 173,
+                                    178, 179, 180, 181, 182, 183, 184};
+    for (int r : kVertexRS) rs.set(r);
+    vdecl = vs = true;
+    vs_f.set();
+    vs_i.set();
+    vs_b.set();
+    lights.set();
+    streams.set();
+}
+
+}  // namespace d3d
+
 namespace {
 
-struct Device;
-
-// ------------------------------------------------------------------ objects
-struct Resource : com::Object {
-    Device* dev = nullptr;
-    uint32_t type = 0, usage = 0, pool = 0, format = 0, priority = 0;
-};
-
-struct Surface : Resource {
-    uint32_t w = 0, h = 0;
-    uint32_t mem = 0;               // guest copy for LockRect (allocated on first lock)
-    com::Object* container = nullptr;
-    uint32_t level = 0;
-    GLuint gl_tex = 0, gl_rb = 0;   // render target / depth backing
-    ~Surface() override {
-        if (mem) gheap::free(mem);
-        if (gl_tex) glDeleteTextures(1, &gl_tex);
-        if (gl_rb) glDeleteRenderbuffers(1, &gl_rb);
-    }
-};
-
-struct Texture : Resource {
-    uint32_t w = 0, h = 0, levels = 1;
-    bool cube = false;
-    std::vector<Surface*> surfaces;  // levels (x6 faces for cube maps)
-    uint32_t lod = 0, autogen_filter = 2;
-    ~Texture() override {
-        for (Surface* s : surfaces) com::release(s);
-    }
-};
-
-struct Buffer : Resource {
-    uint32_t size = 0, fvf = 0;
-    uint32_t mem = 0;
-    bool index = false;
-    bool dirty = true;
-    GLuint gl = 0;
-    ~Buffer() override {
-        if (mem) gheap::free(mem);
-        if (gl) glDeleteBuffers(1, &gl);
-    }
-};
-
-struct Shader : com::Object {
-    Device* dev = nullptr;
-    bool pixel = false;
-    std::vector<uint32_t> tokens;
-};
-
-struct VertexDecl : com::Object {
-    Device* dev = nullptr;
-    std::vector<uint8_t> elements;  // D3DVERTEXELEMENT9 array including D3DDECL_END
-};
-
-struct Query : com::Object {
-    Device* dev = nullptr;
-    uint32_t qtype = 0;
-};
-
-struct StateBlock : com::Object {
-    Device* dev = nullptr;
-};
-
-struct SwapChain : com::Object {
-    Device* dev = nullptr;
-};
-
-struct Direct3D : com::Object {};
-
-struct Stream {
-    uint32_t vb = 0, offset = 0, stride = 0, freq = 1;
-};
-
-struct Device : com::Object {
-    uint32_t d3d = 0;             // guest IDirect3D9
-    uint32_t pp[14] = {};         // D3DPRESENT_PARAMETERS
-    uint32_t behavior = 0, focus = 0;
-    Surface* backbuffer = nullptr;
-    Surface* auto_depth = nullptr;
-    Surface* rt[4] = {};
-    Surface* ds = nullptr;
-    SwapChain* swapchain = nullptr;
-    GLuint fbo = 0, bb_fbo = 0;
-    bool targets_dirty = true;
-
-    uint32_t rs[256] = {};
-    uint32_t ss[20][14] = {};
-    uint32_t tss[8][33] = {};
-    uint32_t textures[20] = {};
-    Stream streams[16];
-    uint32_t indices = 0, vdecl = 0, fvf = 0, vs = 0, ps = 0;
-    float vs_f[256][4] = {}, ps_f[224][4] = {};
-    int32_t vs_i[16][4] = {}, ps_i[16][4] = {};
-    uint32_t vs_b[16] = {}, ps_b[16] = {};
-    uint32_t viewport[6] = {};    // X, Y, Width, Height, MinZ(float), MaxZ(float)
-    uint32_t scissor[4] = {};
-    std::map<uint32_t, std::vector<float>> transforms;
-    uint32_t material[17] = {};
-    std::map<uint32_t, std::vector<uint32_t>> lights;
-    std::map<uint32_t, bool> light_enable;
-    float clip_planes[6][4] = {};
-    bool in_scene = false;
-
-    uint64_t frames = 0, draws = 0, frame_draws = 0;
-    uint64_t stat_t0 = 0, stat_frames = 0;
-};
-
-// ------------------------------------------------------------------ helpers
 std::mutex g_vt_mu;
 
 template <typename T>
@@ -170,7 +109,6 @@ GLenum gl_internal_rt(uint32_t fmt) {
     }
 }
 
-// Surface vtables are built on first use (they need thunks).
 uint32_t surface_vtable();
 uint32_t texture_vtable();
 uint32_t cube_vtable();
@@ -191,7 +129,7 @@ const uint32_t kCubeIIDs[8] = {0xFFF32F81, 0x473AD953, 0xD6932392, 0x3FA9AB52,
                                0x580CA87E, 0x4D541D3C, 0xD3B71D99, 0xCE98C2E3};
 
 Surface* new_surface(Device* d, uint32_t w, uint32_t h, uint32_t fmt, uint32_t usage, uint32_t pool,
-                     com::Object* container, uint32_t level) {
+                     com::Object* container, uint32_t face, uint32_t level) {
     Surface* s = new Surface();
     s->dev = d;
     s->type = RTYPE_SURFACE;
@@ -201,6 +139,7 @@ Surface* new_surface(Device* d, uint32_t w, uint32_t h, uint32_t fmt, uint32_t u
     s->usage = usage;
     s->pool = pool;
     s->container = container;
+    s->face = face;
     s->level = level;
     com::wrap(s, surface_vtable());
     if (usage & USAGE_RENDERTARGET) {
@@ -217,64 +156,78 @@ Surface* new_surface(Device* d, uint32_t w, uint32_t h, uint32_t fmt, uint32_t u
     return s;
 }
 
-void bind_targets(Device* d) {
-    if (!d->targets_dirty) return;
-    glBindFramebuffer(GL_FRAMEBUFFER, d->fbo);
-    Surface* rt = d->rt[0];
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt ? rt->gl_tex : 0, 0);
-    GLuint rb = d->ds ? d->ds->gl_rb : 0;
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
-    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (st != GL_FRAMEBUFFER_COMPLETE) LOGW("render target FBO incomplete: %x", st);
-    d->targets_dirty = false;
-}
-
 void set_default_viewport(Device* d) {
     Surface* rt = d->rt[0];
-    d->viewport[0] = 0;
-    d->viewport[1] = 0;
-    d->viewport[2] = rt ? rt->w : 0;
-    d->viewport[3] = rt ? rt->h : 0;
-    d->viewport[4] = as_u(0.0f);
-    d->viewport[5] = as_u(1.0f);
+    State& s = d->st;
+    s.viewport[0] = 0;
+    s.viewport[1] = 0;
+    s.viewport[2] = rt ? rt->w : 0;
+    s.viewport[3] = rt ? rt->h : 0;
+    s.viewport[4] = as_u(0.0f);
+    s.viewport[5] = as_u(1.0f);
+    s.scissor[0] = s.scissor[1] = 0;
+    s.scissor[2] = rt ? rt->w : 0;
+    s.scissor[3] = rt ? rt->h : 0;
 }
 
 void set_default_states(Device* d) {
-    uint32_t* rs = d->rs;
-    rs[7] = 1;                 // ZENABLE
-    rs[8] = 3;                 // FILLMODE solid
-    rs[9] = 2;                 // SHADEMODE gouraud
-    rs[14] = 1;                // ZWRITEENABLE
-    rs[19] = 2;                // SRCBLEND one
-    rs[20] = 1;                // DESTBLEND zero
-    rs[22] = 2;                // CULLMODE ccw
-    rs[23] = 4;                // ZFUNC lessequal
-    rs[25] = 8;                // ALPHAFUNC always
-    rs[56] = 8;                // STENCILFUNC always
-    rs[58] = 0xFFFFFFFF;       // STENCILMASK
-    rs[59] = 0xFFFFFFFF;       // STENCILWRITEMASK
-    rs[60] = 0xFFFFFFFF;       // TEXTUREFACTOR
-    rs[137] = 1;               // LIGHTING
-    rs[168] = 0xF;             // COLORWRITEENABLE
-    rs[171] = 1;               // BLENDOP add
-    for (auto& s : d->ss) {
-        s[1] = 1;  // ADDRESSU wrap
-        s[2] = 1;
-        s[3] = 1;
-        s[5] = 1;  // MAGFILTER point
-        s[6] = 1;  // MINFILTER point
-        s[7] = 0;  // MIPFILTER none
-        s[10] = 1; // MAXANISOTROPY
+    State& s = d->st;
+    s = State{};
+    uint32_t* rs = s.rs;
+    rs[7] = 1;            // ZENABLE
+    rs[8] = 3;            // FILLMODE solid
+    rs[9] = 2;            // SHADEMODE gouraud
+    rs[14] = 1;           // ZWRITEENABLE
+    rs[16] = 1;           // LASTPIXEL
+    rs[19] = 2;           // SRCBLEND one
+    rs[20] = 1;           // DESTBLEND zero
+    rs[22] = 3;           // CULLMODE ccw
+    rs[23] = 4;           // ZFUNC lessequal
+    rs[25] = 8;           // ALPHAFUNC always
+    rs[38] = as_u(1.0f);  // FOGDENSITY
+    rs[37] = as_u(1.0f);  // FOGEND
+    rs[56] = 8;           // STENCILFUNC always
+    rs[53] = rs[54] = rs[55] = 1;
+    rs[58] = 0xFFFFFFFF;  // STENCILMASK
+    rs[59] = 0xFFFFFFFF;  // STENCILWRITEMASK
+    rs[60] = 0xFFFFFFFF;  // TEXTUREFACTOR
+    rs[136] = 1;          // CLIPPING
+    rs[137] = 1;          // LIGHTING
+    rs[141] = 1;          // COLORVERTEX
+    rs[142] = 1;          // LOCALVIEWER
+    rs[145] = 1;          // DIFFUSEMATERIALSOURCE color1
+    rs[146] = 2;          // SPECULARMATERIALSOURCE color2
+    rs[154] = as_u(1.0f); // POINTSIZE
+    rs[168] = 0xF;        // COLORWRITEENABLE
+    rs[171] = 1;          // BLENDOP add
+    rs[186] = rs[187] = rs[188] = 1;
+    rs[189] = 8;
+    rs[190] = rs[191] = rs[192] = 0xF;
+    rs[193] = 0xFFFFFFFF; // BLENDFACTOR
+    rs[207] = 2;
+    rs[208] = 1;
+    rs[209] = 1;
+    for (auto& ss : s.ss) {
+        ss[1] = ss[2] = ss[3] = 1;  // wrap
+        ss[5] = ss[6] = 1;          // point
+        ss[7] = 0;
+        ss[10] = 1;
     }
     for (int i = 0; i < 8; ++i) {
-        d->tss[i][1] = i == 0 ? 4 : 1;  // COLOROP modulate / disable
-        d->tss[i][2] = 2;               // COLORARG1 texture
-        d->tss[i][3] = 1;               // COLORARG2 current
-        d->tss[i][4] = i == 0 ? 2 : 1;  // ALPHAOP selectarg1 / disable
-        d->tss[i][5] = 2;
-        d->tss[i][6] = 1;
-        d->tss[i][11] = (uint32_t)i;    // TEXCOORDINDEX
+        uint32_t* t = s.tss[i];
+        t[1] = i == 0 ? 4 : 1;  // COLOROP modulate / disable
+        t[2] = 2;               // COLORARG1 texture
+        t[3] = 1;               // COLORARG2 current
+        t[4] = i == 0 ? 2 : 1;  // ALPHAOP selectarg1 / disable
+        t[5] = 2;
+        t[6] = 1;
+        t[11] = (uint32_t)i;    // TEXCOORDINDEX
+        t[26] = t[27] = t[28] = 1;
     }
+    for (int i = 0; i < kTransforms; ++i)
+        for (int j = 0; j < 4; ++j) s.transforms[i][j * 5] = 1.f;
+    for (int i = 0; i < 16; ++i) s.streams[i].freq = 1;
+    set_default_viewport(d);
 }
 
 bool create_backbuffer(Device* d) {
@@ -285,16 +238,15 @@ bool create_backbuffer(Device* d) {
     if (d->pp[2] == FMT_UNKNOWN) d->pp[2] = FMT_X8R8G8B8;
     if (d->backbuffer) com::release(d->backbuffer);
     if (d->auto_depth) com::release(d->auto_depth);
-    d->backbuffer = new_surface(d, w, h, d->pp[2], USAGE_RENDERTARGET, 0, nullptr, 0);
+    d->backbuffer = new_surface(d, w, h, d->pp[2], USAGE_RENDERTARGET, 0, nullptr, 0, 0);
     d->auto_depth = nullptr;
-    if (d->pp[9]) d->auto_depth = new_surface(d, w, h, d->pp[10], USAGE_DEPTHSTENCIL, 0, nullptr, 0);
+    if (d->pp[9]) d->auto_depth = new_surface(d, w, h, d->pp[10], USAGE_DEPTHSTENCIL, 0, nullptr, 0, 0);
     for (auto& r : d->rt) r = nullptr;
     d->rt[0] = d->backbuffer;
     d->ds = d->auto_depth;
     d->targets_dirty = true;
     glBindFramebuffer(GL_FRAMEBUFFER, d->bb_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, d->backbuffer->gl_tex, 0);
-    set_default_viewport(d);
     LOGI("back buffer %ux%u fmt %u, auto depth %s fmt %u", w, h, d->pp[2], d->pp[9] ? "yes" : "no", d->pp[10]);
     return true;
 }
@@ -306,6 +258,8 @@ struct Mode {
 const Mode kModes[] = {{640, 480},  {800, 600},  {1024, 768}, {1280, 720},
                        {1280, 960}, {1600, 720}, {1920, 864}};
 constexpr uint32_t kModeCount = sizeof kModes / sizeof kModes[0];
+
+struct Direct3D : com::Object {};
 
 bool display_format(uint32_t f) { return f == FMT_X8R8G8B8 || f == FMT_R5G6B5 || f == FMT_A8R8G8B8; }
 
@@ -479,6 +433,7 @@ void d3d_CreateDevice(cpu::Cpu& c) {
     com::add_ref(com::from_guest(d->d3d));
     glGenFramebuffers(1, &d->fbo);
     glGenFramebuffers(1, &d->bb_fbo);
+    draw_init(d);
     create_backbuffer(d);
     for (int i = 0; i < 14; ++i) mem::wr32(ppp + i * 4, d->pp[i]);
     set_default_states(d);
@@ -557,10 +512,40 @@ void write_surface_desc(Surface* s, uint32_t p) {
     mem::wr32(p + 28, s->h);
 }
 
-uint32_t surface_lock(Surface* s, uint32_t locked, uint32_t rect) {
-    uint32_t pitch = level_pitch(s->format, s->w);
+bool ensure_surface_mem(Surface* s) {
     if (!s->mem) s->mem = gheap::alloc(level_size(s->format, s->w, s->h), true);
-    if (!s->mem) return D3DERR_OUTOFVIDEOMEMORY;
+    return s->mem != 0;
+}
+
+// Reads a render-target surface back into its guest copy (GetRenderTargetData / LockRect on RTs).
+void readback(Surface* s) {
+    if (!s->gl_tex || !ensure_surface_mem(s) || !gfx::make_current()) return;
+    g_stats.readbacks++;
+    GLuint fbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s->gl_tex, 0);
+    std::vector<uint32_t> px((size_t)s->w * s->h);
+    glReadPixels(0, 0, (GLsizei)s->w, (GLsizei)s->h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    glDeleteFramebuffers(1, &fbo);
+    if (s->dev) s->dev->targets_dirty = true;
+    uint32_t bpp = bytes_per_pixel(s->format);
+    for (size_t i = 0; i < px.size(); ++i) {
+        uint32_t v = px[i];  // RGBA bytes -> D3D ARGB dword (BGRA bytes)
+        uint32_t argb = ((v & 0xFF) << 16) | (v & 0xFF00) | ((v >> 16) & 0xFF) | (v & 0xFF000000u);
+        if (bpp == 4) {
+            mem::wr32(s->mem + (uint32_t)i * 4, argb);
+        } else if (bpp == 2) {
+            uint16_t r = (uint16_t)(((argb >> 19) & 31) << 11 | ((argb >> 10) & 63) << 5 | ((argb >> 3) & 31));
+            mem::wr16(s->mem + (uint32_t)i * 2, r);
+        }
+    }
+}
+
+uint32_t surface_lock(Surface* s, uint32_t locked, uint32_t rect, uint32_t flags) {
+    uint32_t pitch = level_pitch(s->format, s->w);
+    if (!ensure_surface_mem(s)) return D3DERR_OUTOFVIDEOMEMORY;
+    if (s->gl_tex && !(flags & 0x2000)) readback(s);  // lockable render target, not DISCARD
     uint32_t off = 0;
     if (rect) {
         uint32_t left = mem::rd32(rect), top = mem::rd32(rect + 4);
@@ -569,6 +554,7 @@ uint32_t surface_lock(Surface* s, uint32_t locked, uint32_t rect) {
         else
             off = top * pitch + left * bytes_per_pixel(s->format);
     }
+    if (!(flags & 0x10)) s->dirty = true;  // not D3DLOCK_READONLY
     mem::wr32(locked, pitch);
     mem::wr32(locked + 4, s->mem + off);
     return D3D_OK;
@@ -585,7 +571,7 @@ void surf_GetDesc(cpu::Cpu& c) {
     write_surface_desc(obj<Surface>(c), arg(c, 1));
     ret(c, D3D_OK);
 }
-void surf_LockRect(cpu::Cpu& c) { ret(c, surface_lock(obj<Surface>(c), arg(c, 1), arg(c, 2))); }
+void surf_LockRect(cpu::Cpu& c) { ret(c, surface_lock(obj<Surface>(c), arg(c, 1), arg(c, 2), arg(c, 3))); }
 void surf_UnlockRect(cpu::Cpu& c) { ret(c, D3D_OK); }
 
 const com::Method kSurfaceMethods[] = {
@@ -615,6 +601,7 @@ void tex_GetAutoGenFilterType(cpu::Cpu& c) { ret(c, obj<Texture>(c)->autogen_fil
 void tex_GenerateMipSubLevels(cpu::Cpu& c) { ret(c, 0); }
 
 Surface* tex_level(Texture* t, uint32_t face, uint32_t level) {
+    if (level >= t->levels) return nullptr;
     uint32_t i = face * t->levels + level;
     return i < t->surfaces.size() ? t->surfaces[i] : nullptr;
 }
@@ -635,10 +622,13 @@ void tex_GetSurfaceLevel(cpu::Cpu& c) {
 void tex_LockRect(cpu::Cpu& c) {
     Surface* s = tex_level(obj<Texture>(c), 0, arg(c, 1));
     if (!s) return ret(c, D3DERR_INVALIDCALL);
-    ret(c, surface_lock(s, arg(c, 2), arg(c, 3)));
+    ret(c, surface_lock(s, arg(c, 2), arg(c, 3), arg(c, 4)));
 }
 void tex_UnlockRect(cpu::Cpu& c) { ret(c, D3D_OK); }
-void tex_AddDirtyRect(cpu::Cpu& c) { ret(c, D3D_OK); }
+void tex_AddDirtyRect(cpu::Cpu& c) {
+    for (Surface* s : obj<Texture>(c)->surfaces) s->dirty = s->mem != 0;
+    ret(c, D3D_OK);
+}
 
 void cube_GetCubeMapSurface(cpu::Cpu& c) {
     Surface* s = tex_level(obj<Texture>(c), arg(c, 1), arg(c, 2));
@@ -650,7 +640,7 @@ void cube_GetCubeMapSurface(cpu::Cpu& c) {
 void cube_LockRect(cpu::Cpu& c) {
     Surface* s = tex_level(obj<Texture>(c), arg(c, 1), arg(c, 2));
     if (!s) return ret(c, D3DERR_INVALIDCALL);
-    ret(c, surface_lock(s, arg(c, 3), arg(c, 4)));
+    ret(c, surface_lock(s, arg(c, 3), arg(c, 4), arg(c, 5)));
 }
 
 #define BASETEX_METHODS(P)                                              \
@@ -681,11 +671,21 @@ const com::Method kCubeMethods[] = {
 // ------------------------------------------------------------------ buffers
 void buf_Lock(cpu::Cpu& c) {
     Buffer* b = obj<Buffer>(c);
-    uint32_t off = arg(c, 1), out = arg(c, 3);
+    uint32_t off = arg(c, 1), size = arg(c, 2), out = arg(c, 3), flags = arg(c, 4);
     if (!b->mem) b->mem = gheap::alloc(b->size, true);
     if (!b->mem) return ret(c, D3DERR_OUTOFVIDEOMEMORY);
-    b->dirty = true;
-    mem::wr32(out, b->mem + std::min(off, b->size));
+    off = std::min(off, b->size);
+    if (size == 0 || off + size > b->size) size = b->size - off;
+    if (!(flags & 0x10)) {  // not READONLY
+        if (b->dirty_hi <= b->dirty_lo) {
+            b->dirty_lo = off;
+            b->dirty_hi = off + size;
+        } else {
+            b->dirty_lo = std::min(b->dirty_lo, off);
+            b->dirty_hi = std::max(b->dirty_hi, off + size);
+        }
+    }
+    mem::wr32(out, b->mem + off);
     ret(c, D3D_OK);
 }
 void buf_Unlock(cpu::Cpu& c) { ret(c, D3D_OK); }
@@ -758,8 +758,8 @@ const com::Method kPSMethods[] = {
 void vdecl_GetDeclaration(cpu::Cpu& c) {
     VertexDecl* v = obj<VertexDecl>(c);
     uint32_t out = arg(c, 1), pn = arg(c, 2);
-    if (out) memcpy(mem::ptr(out), v->elements.data(), v->elements.size());
-    mem::wr32(pn, (uint32_t)v->elements.size() / 8);
+    if (out) memcpy(mem::ptr(out), v->raw.data(), v->raw.size());
+    mem::wr32(pn, (uint32_t)v->raw.size() / 8);
     ret(c, D3D_OK);
 }
 const com::Method kVDeclMethods[] = {
@@ -771,10 +771,7 @@ const com::Method kVDeclMethods[] = {
 };
 
 void query_GetType(cpu::Cpu& c) { ret(c, obj<Query>(c)->qtype); }
-void query_GetDataSize(cpu::Cpu& c) {
-    uint32_t t = obj<Query>(c)->qtype;
-    ret(c, t == 8 ? 4 : t == 9 ? 4 : 4);  // EVENT: BOOL, OCCLUSION: DWORD
-}
+void query_GetDataSize(cpu::Cpu& c) { ret(c, 4); }
 void query_Issue(cpu::Cpu& c) { ret(c, D3D_OK); }
 void query_GetData(cpu::Cpu& c) {
     Query* q = obj<Query>(c);
@@ -793,13 +790,84 @@ const com::Method kQueryMethods[] = {
     {"IDirect3DQuery9::GetData", 16, query_GetData, 0},
 };
 
+// ------------------------------------------------------------------ state blocks
+template <size_t N, typename T>
+void copy_bits(const std::bitset<N>& m, const T* from, T* to) {
+    for (size_t i = 0; i < N; ++i)
+        if (m[i]) to[i] = from[i];
+}
+
+void copy_state(const State& f, State& t, const StateMask& m) {
+    copy_bits(m.rs, f.rs, t.rs);
+    for (size_t i = 0; i < 20 * 14; ++i)
+        if (m.ss[i]) t.ss[i / 14][i % 14] = f.ss[i / 14][i % 14];
+    for (size_t i = 0; i < 8 * 33; ++i)
+        if (m.tss[i]) t.tss[i / 33][i % 33] = f.tss[i / 33][i % 33];
+    copy_bits(m.textures, f.textures, t.textures);
+    copy_bits(m.streams, f.streams, t.streams);
+    if (m.indices) t.indices = f.indices;
+    if (m.vdecl) {
+        t.vdecl = f.vdecl;
+        t.fvf = f.fvf;
+    }
+    if (m.vs) t.vs = f.vs;
+    if (m.ps) t.ps = f.ps;
+    for (int i = 0; i < 256; ++i)
+        if (m.vs_f[i]) memcpy(t.vs_f[i], f.vs_f[i], 16);
+    for (int i = 0; i < 224; ++i)
+        if (m.ps_f[i]) memcpy(t.ps_f[i], f.ps_f[i], 16);
+    for (int i = 0; i < 16; ++i) {
+        if (m.vs_i[i]) memcpy(t.vs_i[i], f.vs_i[i], 16);
+        if (m.ps_i[i]) memcpy(t.ps_i[i], f.ps_i[i], 16);
+        if (m.vs_b[i]) t.vs_b[i] = f.vs_b[i];
+        if (m.ps_b[i]) t.ps_b[i] = f.ps_b[i];
+        if (m.lights[i]) t.lights[i] = f.lights[i];
+    }
+    if (m.viewport) memcpy(t.viewport, f.viewport, sizeof t.viewport);
+    if (m.scissor) memcpy(t.scissor, f.scissor, sizeof t.scissor);
+    if (m.material) memcpy(t.material, f.material, sizeof t.material);
+    for (int i = 0; i < kTransforms; ++i)
+        if (m.transforms[i]) memcpy(t.transforms[i], f.transforms[i], 64);
+    for (int i = 0; i < 6; ++i)
+        if (m.clip[i]) memcpy(t.clip_planes[i], f.clip_planes[i], 16);
+}
+
+void sb_Capture(cpu::Cpu& c) {
+    StateBlock* sb = obj<StateBlock>(c);
+    copy_state(sb->dev->st, sb->state, sb->mask);
+    ret(c, D3D_OK);
+}
+void sb_Apply(cpu::Cpu& c) {
+    StateBlock* sb = obj<StateBlock>(c);
+    Device* d = sb->dev;
+    copy_state(sb->state, d->target(), sb->mask);
+    if (StateMask* m = d->mask()) {  // applying while recording records the states
+        m->rs |= sb->mask.rs;
+        m->ss |= sb->mask.ss;
+        m->tss |= sb->mask.tss;
+        m->textures |= sb->mask.textures;
+        m->streams |= sb->mask.streams;
+        m->vs_f |= sb->mask.vs_f;
+        m->ps_f |= sb->mask.ps_f;
+        m->transforms |= sb->mask.transforms;
+        m->lights |= sb->mask.lights;
+        m->indices |= sb->mask.indices;
+        m->vdecl |= sb->mask.vdecl;
+        m->vs |= sb->mask.vs;
+        m->ps |= sb->mask.ps;
+        m->viewport |= sb->mask.viewport;
+        m->scissor |= sb->mask.scissor;
+        m->material |= sb->mask.material;
+    }
+    ret(c, D3D_OK);
+}
 const com::Method kStateBlockMethods[] = {
     {"IDirect3DStateBlock9::QueryInterface", 12, com::QueryInterface, 0},
     {"IDirect3DStateBlock9::AddRef", 4, com::AddRef, 0},
     {"IDirect3DStateBlock9::Release", 4, com::Release, 0},
     {"IDirect3DStateBlock9::GetDevice", 8, dev_of<StateBlock>, 0},
-    {"IDirect3DStateBlock9::Capture", 4, nullptr, 0},
-    {"IDirect3DStateBlock9::Apply", 4, nullptr, 0},
+    {"IDirect3DStateBlock9::Capture", 4, sb_Capture, 0},
+    {"IDirect3DStateBlock9::Apply", 4, sb_Apply, 0},
 };
 
 void present_frame(Device* d);
@@ -836,7 +904,9 @@ const com::Method kSwapChainMethods[] = {
 Device* dev(cpu::Cpu& c) { return obj<Device>(c); }
 
 void present_frame(Device* d) {
+    uint64_t t0 = winu::mono_ns();
     gfx::present(d->bb_fbo, (int)d->backbuffer->w, (int)d->backbuffer->h);
+    g_stats.ns_present += winu::mono_ns() - t0;
     d->targets_dirty = true;  // present rebinds framebuffers
     d->frames++;
     d->stat_frames++;
@@ -846,9 +916,17 @@ void present_frame(Device* d) {
         double secs = (double)(now - d->stat_t0) / 1e9;
         LOGI("presented %llu frames, %.1f FPS, %llu draws total", (unsigned long long)d->frames,
              (double)d->stat_frames / secs, (unsigned long long)d->draws);
+        const GfxStats& g = g_stats;
+        LOGI("  gfx/5s: draw %.0f ms, present %.0f ms, tex upload %.0f ms (%llu levels, %llu KB), "
+             "buffers %llu (%llu KB), ring %llu KB (%llu orphans), readbacks %llu",
+             g.ns_draw / 1e6, g.ns_present / 1e6, g.ns_upload / 1e6, (unsigned long long)g.tex_uploads,
+             (unsigned long long)(g.tex_bytes >> 10), (unsigned long long)g.buf_uploads,
+             (unsigned long long)(g.buf_bytes >> 10), (unsigned long long)(g.ring_bytes >> 10),
+             (unsigned long long)g.orphans, (unsigned long long)g.readbacks);
+        g_stats = GfxStats{};
+        aot::dump_profile((proc::config().user_dir + "/aot_profile.txt").c_str());
         char buf[96];
-        snprintf(buf, sizeof buf, "Running: %.1f FPS (%llu frames)", (double)d->stat_frames / secs,
-                 (unsigned long long)d->frames);
+        snprintf(buf, sizeof buf, "%.1f FPS", (double)d->stat_frames / secs);
         proc::set_status(buf);
         d->stat_t0 = now;
         d->stat_frames = 0;
@@ -923,11 +1001,10 @@ void dev_GetRasterStatus(cpu::Cpu& c) {
 
 Texture* new_texture(Device* d, uint32_t w, uint32_t h, uint32_t levels, uint32_t usage, uint32_t fmt,
                      uint32_t pool, bool cube) {
-    if (levels == 0) {
-        levels = 1;
-        for (uint32_t s = std::max(w, h); s > 1; s >>= 1) ++levels;
-    }
-    if (usage & USAGE_AUTOGENMIPMAP) levels = 1;
+    uint32_t full = 1;
+    for (uint32_t s = std::max(w, h); s > 1; s >>= 1) ++full;
+    if (levels == 0 || levels > full) levels = full;
+    if (usage & (USAGE_AUTOGENMIPMAP | USAGE_RENDERTARGET)) levels = (usage & USAGE_AUTOGENMIPMAP) ? full : 1;
     Texture* t = new Texture();
     t->dev = d;
     t->type = cube ? RTYPE_CUBETEXTURE : RTYPE_TEXTURE;
@@ -944,7 +1021,9 @@ Texture* new_texture(Device* d, uint32_t w, uint32_t h, uint32_t levels, uint32_
     for (uint32_t f = 0; f < (cube ? 6u : 1u); ++f) {
         for (uint32_t l = 0; l < levels; ++l) {
             uint32_t lw = std::max(1u, w >> l), lh = std::max(1u, h >> l);
-            t->surfaces.push_back(new_surface(d, lw, lh, fmt, l == 0 ? usage : (usage & ~USAGE_RENDERTARGET), pool, t, l));
+            uint32_t u = l == 0 ? usage : (usage & ~USAGE_RENDERTARGET);
+            if (cube) u &= ~USAGE_RENDERTARGET;
+            t->surfaces.push_back(new_surface(d, lw, lh, fmt, u, pool, t, f, l));
         }
     }
     return t;
@@ -985,18 +1064,70 @@ void dev_CreateIndexBuffer(cpu::Cpu& c) {
     ret(c, D3D_OK);
 }
 void dev_CreateRenderTarget(cpu::Cpu& c) {
-    Surface* s = new_surface(dev(c), arg(c, 1), arg(c, 2), arg(c, 3), USAGE_RENDERTARGET, 0, nullptr, 0);
+    Surface* s = new_surface(dev(c), arg(c, 1), arg(c, 2), arg(c, 3), USAGE_RENDERTARGET, 0, nullptr, 0, 0);
     write_ptr(arg(c, 7), s);
     ret(c, D3D_OK);
 }
 void dev_CreateDepthStencilSurface(cpu::Cpu& c) {
-    Surface* s = new_surface(dev(c), arg(c, 1), arg(c, 2), arg(c, 3), USAGE_DEPTHSTENCIL, 0, nullptr, 0);
+    Surface* s = new_surface(dev(c), arg(c, 1), arg(c, 2), arg(c, 3), USAGE_DEPTHSTENCIL, 0, nullptr, 0, 0);
     write_ptr(arg(c, 7), s);
     ret(c, D3D_OK);
 }
 void dev_CreateOffscreenPlainSurface(cpu::Cpu& c) {
-    Surface* s = new_surface(dev(c), arg(c, 1), arg(c, 2), arg(c, 3), 0, arg(c, 4), nullptr, 0);
+    Surface* s = new_surface(dev(c), arg(c, 1), arg(c, 2), arg(c, 3), 0, arg(c, 4), nullptr, 0, 0);
     write_ptr(arg(c, 5), s);
+    ret(c, D3D_OK);
+}
+
+// Copies guest-memory contents between same-format surfaces (UpdateSurface / UpdateTexture).
+void copy_surface_mem(Surface* src, Surface* dst, uint32_t src_rect, uint32_t dst_point) {
+    if (!src->mem || !ensure_surface_mem(dst) || src->format != dst->format) return;
+    uint32_t sl = 0, st = 0, sr = src->w, sb = src->h;
+    if (src_rect) {
+        sl = mem::rd32(src_rect);
+        st = mem::rd32(src_rect + 4);
+        sr = mem::rd32(src_rect + 8);
+        sb = mem::rd32(src_rect + 12);
+    }
+    uint32_t dx = dst_point ? mem::rd32(dst_point) : sl, dy = dst_point ? mem::rd32(dst_point + 4) : st;
+    if (is_dxt(src->format)) {
+        sl /= 4; st /= 4; sr = (sr + 3) / 4; sb = (sb + 3) / 4; dx /= 4; dy /= 4;
+    }
+    uint32_t bpp = is_dxt(src->format) ? (src->format == FMT_DXT1 ? 8 : 16) : bytes_per_pixel(src->format);
+    uint32_t sp = level_pitch(src->format, src->w), dp = level_pitch(dst->format, dst->w);
+    uint32_t rows = std::min(sb - st, level_rows(dst->format, dst->h) - dy);
+    uint32_t bytes = std::min((sr - sl) * bpp, dp - dx * bpp);
+    for (uint32_t y = 0; y < rows; ++y)
+        memcpy(mem::ptr(dst->mem + (dy + y) * dp + dx * bpp), mem::ptr(src->mem + (st + y) * sp + sl * bpp), bytes);
+    dst->dirty = true;
+}
+
+void dev_UpdateSurface(cpu::Cpu& c) {
+    Surface* src = obj<Surface>(c, 1);
+    Surface* dst = obj<Surface>(c, 3);
+    if (!src || !dst) return ret(c, D3DERR_INVALIDCALL);
+    copy_surface_mem(src, dst, arg(c, 2), arg(c, 4));
+    ret(c, D3D_OK);
+}
+void dev_UpdateTexture(cpu::Cpu& c) {
+    Texture* src = obj<Texture>(c, 1);
+    Texture* dst = obj<Texture>(c, 2);
+    if (!src || !dst) return ret(c, D3DERR_INVALIDCALL);
+    // Match levels by size (source may have more levels than the destination).
+    uint32_t skip = 0;
+    while (skip < src->levels && std::max(1u, src->w >> skip) > dst->w) ++skip;
+    uint32_t faces = src->cube ? 6 : 1;
+    for (uint32_t f = 0; f < faces; ++f)
+        for (uint32_t l = 0; l < dst->levels && l + skip < src->levels; ++l)
+            copy_surface_mem(src->surfaces[f * src->levels + l + skip], dst->surfaces[f * dst->levels + l], 0, 0);
+    ret(c, D3D_OK);
+}
+void dev_GetRenderTargetData(cpu::Cpu& c) {
+    Surface* rt = obj<Surface>(c, 1);
+    Surface* dst = obj<Surface>(c, 2);
+    if (!rt || !dst) return ret(c, D3DERR_INVALIDCALL);
+    readback(rt);
+    copy_surface_mem(rt, dst, 0, 0);
     ret(c, D3D_OK);
 }
 
@@ -1004,16 +1135,11 @@ void dev_SetRenderTarget(cpu::Cpu& c) {
     Device* d = dev(c);
     uint32_t i = arg(c, 1);
     if (i >= 4) return ret(c, D3DERR_INVALIDCALL);
-    d->rt[i] = obj<Surface>(c, 2);
+    Surface* s = obj<Surface>(c, 2);
+    if (i == 0 && !s) return ret(c, D3DERR_INVALIDCALL);
+    d->rt[i] = s;
     d->targets_dirty = true;
-    if (i == 0) {
-        set_default_viewport(d);
-        if (d->rt[0]) {
-            d->scissor[0] = d->scissor[1] = 0;
-            d->scissor[2] = d->rt[0]->w;
-            d->scissor[3] = d->rt[0]->h;
-        }
-    }
+    if (i == 0) set_default_viewport(d);
     ret(c, D3D_OK);
 }
 void dev_GetRenderTarget(cpu::Cpu& c) {
@@ -1045,6 +1171,34 @@ void dev_EndScene(cpu::Cpu& c) {
     ret(c, D3D_OK);
 }
 
+void clear_rects(Device* d, uint32_t count, uint32_t rects, GLbitfield mask) {
+    glEnable(GL_SCISSOR_TEST);
+    auto clear_rect = [&](int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
+        if (x2 <= x1 || y2 <= y1) return;
+        glScissor(x1, y1, x2 - x1, y2 - y1);
+        glClear(mask);
+    };
+    const State& s = d->st;
+    int32_t vx = (int32_t)s.viewport[0], vy = (int32_t)s.viewport[1];
+    int32_t vx2 = vx + (int32_t)s.viewport[2], vy2 = vy + (int32_t)s.viewport[3];
+    if (s.rs[174]) {  // scissor test also limits Clear
+        vx = std::max(vx, (int32_t)s.scissor[0]);
+        vy = std::max(vy, (int32_t)s.scissor[1]);
+        vx2 = std::min(vx2, (int32_t)s.scissor[2]);
+        vy2 = std::min(vy2, (int32_t)s.scissor[3]);
+    }
+    if (count && rects) {
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t r = rects + i * 16;
+            clear_rect(std::max(vx, (int32_t)mem::rd32(r)), std::max(vy, (int32_t)mem::rd32(r + 4)),
+                       std::min(vx2, (int32_t)mem::rd32(r + 8)), std::min(vy2, (int32_t)mem::rd32(r + 12)));
+        }
+    } else {
+        clear_rect(vx, vy, vx2, vy2);
+    }
+    glDisable(GL_SCISSOR_TEST);
+}
+
 void dev_Clear(cpu::Cpu& c) {
     Device* d = dev(c);
     uint32_t count = arg(c, 1), rects = arg(c, 2), flags = arg(c, 3), color = arg(c, 4);
@@ -1063,94 +1217,174 @@ void dev_Clear(cpu::Cpu& c) {
     if (flags & 1) mask |= GL_COLOR_BUFFER_BIT;
     if ((flags & 2) && d->ds) mask |= GL_DEPTH_BUFFER_BIT;
     if ((flags & 4) && d->ds) mask |= GL_STENCIL_BUFFER_BIT;
-    uint32_t rth = d->rt[0] ? d->rt[0]->h : 0;
-    glEnable(GL_SCISSOR_TEST);
-    auto clear_rect = [&](int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
-        // D3D is top-left origin; GL is bottom-left.
-        glScissor(x1, (GLint)rth - y2, x2 - x1, y2 - y1);
-        glClear(mask);
-    };
-    if (count && rects) {
-        for (uint32_t i = 0; i < count; ++i) {
-            uint32_t r = rects + i * 16;
-            clear_rect((int32_t)mem::rd32(r), (int32_t)mem::rd32(r + 4), (int32_t)mem::rd32(r + 8),
-                       (int32_t)mem::rd32(r + 12));
-        }
-    } else {
-        int32_t x = (int32_t)d->viewport[0], y = (int32_t)d->viewport[1];
-        clear_rect(x, y, x + (int32_t)d->viewport[2], y + (int32_t)d->viewport[3]);
-    }
-    glDisable(GL_SCISSOR_TEST);
+    if (mask) clear_rects(d, count, rects, mask);
     ret(c, D3D_OK);
 }
 
+void dev_ColorFill(cpu::Cpu& c) {
+    Device* d = dev(c);
+    Surface* s = obj<Surface>(c, 1);
+    uint32_t rect = arg(c, 2), color = arg(c, 3);
+    if (!s) return ret(c, D3DERR_INVALIDCALL);
+    if (s->gl_tex && gfx::make_current()) {
+        GLuint fbo;
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s->gl_tex, 0);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glClearColor(((color >> 16) & 0xFF) / 255.f, ((color >> 8) & 0xFF) / 255.f, (color & 0xFF) / 255.f,
+                     ((color >> 24) & 0xFF) / 255.f);
+        if (rect) {
+            glEnable(GL_SCISSOR_TEST);
+            int32_t l = (int32_t)mem::rd32(rect), t = (int32_t)mem::rd32(rect + 4);
+            glScissor(l, t, (int32_t)mem::rd32(rect + 8) - l, (int32_t)mem::rd32(rect + 12) - t);
+        }
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
+        glDeleteFramebuffers(1, &fbo);
+        d->targets_dirty = true;
+    } else if (ensure_surface_mem(s) && bytes_per_pixel(s->format) == 4 && !is_dxt(s->format)) {
+        for (uint32_t i = 0; i < s->w * s->h; ++i) mem::wr32(s->mem + i * 4, color);
+        s->dirty = true;
+    }
+    ret(c, D3D_OK);
+}
+
+// --- state setters (write to the recording block while recording) ---
 void dev_SetTransform(cpu::Cpu& c) {
-    std::vector<float> m(16);
-    memcpy(m.data(), mem::ptr(arg(c, 2)), 64);
-    dev(c)->transforms[arg(c, 1)] = std::move(m);
+    Device* d = dev(c);
+    int slot = transform_slot(arg(c, 1));
+    if (slot >= 0) {
+        memcpy(d->target().transforms[slot], mem::ptr(arg(c, 2)), 64);
+        if (StateMask* m = d->mask()) m->transforms.set((size_t)slot);
+    }
     ret(c, D3D_OK);
 }
 void dev_GetTransform(cpu::Cpu& c) {
-    Device* d = dev(c);
-    auto it = d->transforms.find(arg(c, 1));
+    int slot = transform_slot(arg(c, 1));
     static const float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    memcpy(mem::ptr(arg(c, 2)), it == d->transforms.end() ? kIdentity : it->second.data(), 64);
+    memcpy(mem::ptr(arg(c, 2)), slot >= 0 ? dev(c)->st.transforms[slot] : kIdentity, 64);
+    ret(c, D3D_OK);
+}
+void dev_MultiplyTransform(cpu::Cpu& c) {
+    Device* d = dev(c);
+    int slot = transform_slot(arg(c, 1));
+    if (slot >= 0) {
+        float m[16], r[16];
+        memcpy(m, mem::ptr(arg(c, 2)), 64);
+        const float* a = d->target().transforms[slot];
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j)
+                r[i * 4 + j] = a[i * 4] * m[j] + a[i * 4 + 1] * m[4 + j] + a[i * 4 + 2] * m[8 + j] + a[i * 4 + 3] * m[12 + j];
+        memcpy(d->target().transforms[slot], r, 64);
+        if (StateMask* mk = d->mask()) mk->transforms.set((size_t)slot);
+    }
     ret(c, D3D_OK);
 }
 void dev_SetViewport(cpu::Cpu& c) {
-    memcpy(dev(c)->viewport, mem::ptr(arg(c, 1)), 24);
+    Device* d = dev(c);
+    memcpy(d->target().viewport, mem::ptr(arg(c, 1)), 24);
+    if (StateMask* m = d->mask()) m->viewport = true;
     ret(c, D3D_OK);
 }
 void dev_GetViewport(cpu::Cpu& c) {
-    memcpy(mem::ptr(arg(c, 1)), dev(c)->viewport, 24);
+    memcpy(mem::ptr(arg(c, 1)), dev(c)->st.viewport, 24);
     ret(c, D3D_OK);
 }
 void dev_SetMaterial(cpu::Cpu& c) {
-    memcpy(dev(c)->material, mem::ptr(arg(c, 1)), 68);
+    Device* d = dev(c);
+    memcpy(d->target().material, mem::ptr(arg(c, 1)), 68);
+    if (StateMask* m = d->mask()) m->material = true;
     ret(c, D3D_OK);
 }
 void dev_GetMaterial(cpu::Cpu& c) {
-    memcpy(mem::ptr(arg(c, 1)), dev(c)->material, 68);
+    memcpy(mem::ptr(arg(c, 1)), dev(c)->st.material, 68);
     ret(c, D3D_OK);
 }
 void dev_SetLight(cpu::Cpu& c) {
-    std::vector<uint32_t> l(26);
-    memcpy(l.data(), mem::ptr(arg(c, 2)), 104);
-    dev(c)->lights[arg(c, 1)] = std::move(l);
+    Device* d = dev(c);
+    uint32_t i = arg(c, 1);
+    if (i < 16) {
+        memcpy(d->target().lights[i].data, mem::ptr(arg(c, 2)), 104);
+        if (StateMask* m = d->mask()) m->lights.set(i);
+    }
+    ret(c, D3D_OK);
+}
+void dev_GetLight(cpu::Cpu& c) {
+    uint32_t i = arg(c, 1);
+    if (i >= 16) return ret(c, D3DERR_INVALIDCALL);
+    memcpy(mem::ptr(arg(c, 2)), dev(c)->st.lights[i].data, 104);
     ret(c, D3D_OK);
 }
 void dev_LightEnable(cpu::Cpu& c) {
-    dev(c)->light_enable[arg(c, 1)] = arg(c, 2) != 0;
+    Device* d = dev(c);
+    uint32_t i = arg(c, 1);
+    if (i < 16) {
+        d->target().lights[i].enabled = arg(c, 2) != 0;
+        if (StateMask* m = d->mask()) m->lights.set(i);
+    }
+    ret(c, D3D_OK);
+}
+void dev_GetLightEnable(cpu::Cpu& c) {
+    uint32_t i = arg(c, 1);
+    mem::wr32(arg(c, 2), i < 16 && dev(c)->st.lights[i].enabled ? 1 : 0);
     ret(c, D3D_OK);
 }
 void dev_SetClipPlane(cpu::Cpu& c) {
+    Device* d = dev(c);
     uint32_t i = arg(c, 1);
-    if (i < 6) memcpy(dev(c)->clip_planes[i], mem::ptr(arg(c, 2)), 16);
+    if (i < 6) {
+        memcpy(d->target().clip_planes[i], mem::ptr(arg(c, 2)), 16);
+        if (StateMask* m = d->mask()) m->clip.set(i);
+    }
+    ret(c, D3D_OK);
+}
+void dev_GetClipPlane(cpu::Cpu& c) {
+    uint32_t i = arg(c, 1);
+    if (i < 6) memcpy(mem::ptr(arg(c, 2)), dev(c)->st.clip_planes[i], 16);
     ret(c, D3D_OK);
 }
 void dev_SetRenderState(cpu::Cpu& c) {
+    Device* d = dev(c);
     uint32_t s = arg(c, 1);
-    if (s < 256) dev(c)->rs[s] = arg(c, 2);
+    if (s < 256) {
+        d->target().rs[s] = arg(c, 2);
+        if (StateMask* m = d->mask()) m->rs.set(s);
+    }
     ret(c, D3D_OK);
 }
 void dev_GetRenderState(cpu::Cpu& c) {
     uint32_t s = arg(c, 1);
-    mem::wr32(arg(c, 2), s < 256 ? dev(c)->rs[s] : 0);
+    mem::wr32(arg(c, 2), s < 256 ? dev(c)->st.rs[s] : 0);
     ret(c, D3D_OK);
 }
 
 void dev_CreateStateBlock(cpu::Cpu& c) {
+    Device* d = dev(c);
     StateBlock* sb = new StateBlock();
-    sb->dev = dev(c);
+    sb->dev = d;
+    uint32_t type = arg(c, 1);  // 1 ALL, 2 PIXELSTATE, 3 VERTEXSTATE
+    if (type == 2) sb->mask.set_pixel();
+    else if (type == 3) sb->mask.set_vertex();
+    else sb->mask.set_all();
+    copy_state(d->st, sb->state, sb->mask);
     com::wrap(sb, stateblock_vtable());
     write_ptr(arg(c, 2), sb);
-    LOG_ONCE("state blocks are accepted but do not capture state yet");
     ret(c, D3D_OK);
 }
-void dev_BeginStateBlock(cpu::Cpu& c) { ret(c, D3D_OK); }
+void dev_BeginStateBlock(cpu::Cpu& c) {
+    Device* d = dev(c);
+    if (d->recording) return ret(c, D3DERR_INVALIDCALL);
+    d->recording = new StateBlock();
+    d->recording->dev = d;
+    d->recording->state = d->st;
+    ret(c, D3D_OK);
+}
 void dev_EndStateBlock(cpu::Cpu& c) {
-    StateBlock* sb = new StateBlock();
-    sb->dev = dev(c);
+    Device* d = dev(c);
+    StateBlock* sb = d->recording;
+    if (!sb) return ret(c, D3DERR_INVALIDCALL);
+    d->recording = nullptr;
     com::wrap(sb, stateblock_vtable());
     write_ptr(arg(c, 1), sb);
     ret(c, D3D_OK);
@@ -1160,34 +1394,46 @@ uint32_t sampler_index(uint32_t s) { return s >= 257 ? 16 + (s - 257) : s; }  //
 
 void dev_GetTexture(cpu::Cpu& c) {
     uint32_t s = sampler_index(arg(c, 1));
-    uint32_t t = s < 20 ? dev(c)->textures[s] : 0;
+    uint32_t t = s < 20 ? dev(c)->st.textures[s] : 0;
     if (com::Object* o = com::from_guest(t)) com::add_ref(o);
     mem::wr32(arg(c, 2), t);
     ret(c, D3D_OK);
 }
 void dev_SetTexture(cpu::Cpu& c) {
+    Device* d = dev(c);
     uint32_t s = sampler_index(arg(c, 1));
-    if (s < 20) dev(c)->textures[s] = arg(c, 2);
+    if (s < 20) {
+        d->target().textures[s] = arg(c, 2);
+        if (StateMask* m = d->mask()) m->textures.set(s);
+    }
     ret(c, D3D_OK);
 }
 void dev_GetTextureStageState(cpu::Cpu& c) {
     uint32_t st = arg(c, 1), t = arg(c, 2);
-    mem::wr32(arg(c, 3), st < 8 && t < 33 ? dev(c)->tss[st][t] : 0);
+    mem::wr32(arg(c, 3), st < 8 && t < 33 ? dev(c)->st.tss[st][t] : 0);
     ret(c, D3D_OK);
 }
 void dev_SetTextureStageState(cpu::Cpu& c) {
+    Device* d = dev(c);
     uint32_t st = arg(c, 1), t = arg(c, 2);
-    if (st < 8 && t < 33) dev(c)->tss[st][t] = arg(c, 3);
+    if (st < 8 && t < 33) {
+        d->target().tss[st][t] = arg(c, 3);
+        if (StateMask* m = d->mask()) m->tss.set(st * 33 + t);
+    }
     ret(c, D3D_OK);
 }
 void dev_GetSamplerState(cpu::Cpu& c) {
     uint32_t s = sampler_index(arg(c, 1)), t = arg(c, 2);
-    mem::wr32(arg(c, 3), s < 20 && t < 14 ? dev(c)->ss[s][t] : 0);
+    mem::wr32(arg(c, 3), s < 20 && t < 14 ? dev(c)->st.ss[s][t] : 0);
     ret(c, D3D_OK);
 }
 void dev_SetSamplerState(cpu::Cpu& c) {
+    Device* d = dev(c);
     uint32_t s = sampler_index(arg(c, 1)), t = arg(c, 2);
-    if (s < 20 && t < 14) dev(c)->ss[s][t] = arg(c, 3);
+    if (s < 20 && t < 14) {
+        d->target().ss[s][t] = arg(c, 3);
+        if (StateMask* m = d->mask()) m->ss.set(s * 14 + t);
+    }
     ret(c, D3D_OK);
 }
 void dev_ValidateDevice(cpu::Cpu& c) {
@@ -1195,41 +1441,50 @@ void dev_ValidateDevice(cpu::Cpu& c) {
     ret(c, D3D_OK);
 }
 void dev_SetScissorRect(cpu::Cpu& c) {
-    memcpy(dev(c)->scissor, mem::ptr(arg(c, 1)), 16);
+    Device* d = dev(c);
+    memcpy(d->target().scissor, mem::ptr(arg(c, 1)), 16);
+    if (StateMask* m = d->mask()) m->scissor = true;
     ret(c, D3D_OK);
 }
 void dev_GetScissorRect(cpu::Cpu& c) {
-    memcpy(mem::ptr(arg(c, 1)), dev(c)->scissor, 16);
+    memcpy(mem::ptr(arg(c, 1)), dev(c)->st.scissor, 16);
     ret(c, D3D_OK);
 }
 void dev_GetSoftwareVertexProcessing(cpu::Cpu& c) { ret(c, 0); }
 
-void count_draw(Device* d, const char* what) {
+void count_draw(Device* d) {
     d->draws++;
     d->frame_draws++;
-    LOG_ONCE("draw calls are accepted but not rendered yet (shader translator pending)");
-    (void)what;
 }
 void dev_DrawPrimitive(cpu::Cpu& c) {
-    count_draw(dev(c), "DrawPrimitive");
+    Device* d = dev(c);
+    count_draw(d);
+    draw(d, arg(c, 1), arg(c, 2), arg(c, 3), false, 0, 0, 0, 0, 0, 0, 0);
     ret(c, D3D_OK);
 }
 void dev_DrawIndexedPrimitive(cpu::Cpu& c) {
-    count_draw(dev(c), "DrawIndexedPrimitive");
+    Device* d = dev(c);
+    count_draw(d);
+    // (Type, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount)
+    draw(d, arg(c, 1), 0, arg(c, 6), true, (int32_t)arg(c, 2), arg(c, 5), 0, 0, 0, 0, 0);
     ret(c, D3D_OK);
 }
 void dev_DrawPrimitiveUP(cpu::Cpu& c) {
     Device* d = dev(c);
-    count_draw(d, "DrawPrimitiveUP");
-    d->streams[0] = Stream{};  // D3D9 resets stream 0 after *UP draws
-    d->indices = 0;
+    count_draw(d);
+    // (PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride)
+    draw(d, arg(c, 1), 0, arg(c, 2), false, 0, 0, arg(c, 3), arg(c, 4), 0, 0, 0);
+    d->st.streams[0] = Stream{};  // D3D9 resets stream 0 after *UP draws
+    d->st.indices = 0;
     ret(c, D3D_OK);
 }
 void dev_DrawIndexedPrimitiveUP(cpu::Cpu& c) {
     Device* d = dev(c);
-    count_draw(d, "DrawIndexedPrimitiveUP");
-    d->streams[0] = Stream{};
-    d->indices = 0;
+    count_draw(d);
+    // (Type, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, Stride)
+    draw(d, arg(c, 1), 0, arg(c, 4), true, 0, 0, arg(c, 7), arg(c, 8), arg(c, 5), arg(c, 6), arg(c, 2) + arg(c, 3));
+    d->st.streams[0] = Stream{};
+    d->st.indices = 0;
     ret(c, D3D_OK);
 }
 
@@ -1239,8 +1494,16 @@ void dev_CreateVertexDeclaration(cpu::Cpu& c) {
     uint32_t p = arg(c, 1);
     for (uint32_t i = 0; i < 64; ++i, p += 8) {
         const uint8_t* e = mem::ptr(p);
-        v->elements.insert(v->elements.end(), e, e + 8);
+        v->raw.insert(v->raw.end(), e, e + 8);
         if (mem::rd16(p) == 0xFF) break;
+        VertexElement el;
+        el.stream = mem::rd16(p);
+        el.offset = mem::rd16(p + 2);
+        el.type = mem::rd8(p + 4);
+        el.method = mem::rd8(p + 5);
+        el.usage = mem::rd8(p + 6);
+        el.usage_index = mem::rd8(p + 7);
+        if (el.type != 17) v->elements.push_back(el);
     }
     com::wrap(v, vdecl_vtable());
     write_ptr(arg(c, 2), v);
@@ -1248,23 +1511,25 @@ void dev_CreateVertexDeclaration(cpu::Cpu& c) {
 }
 void dev_SetVertexDeclaration(cpu::Cpu& c) {
     Device* d = dev(c);
-    d->vdecl = arg(c, 1);
+    d->target().vdecl = arg(c, 1);
+    if (StateMask* m = d->mask()) m->vdecl = true;
     ret(c, D3D_OK);
 }
 void dev_GetVertexDeclaration(cpu::Cpu& c) {
-    uint32_t v = dev(c)->vdecl;
+    uint32_t v = dev(c)->st.vdecl;
     if (com::Object* o = com::from_guest(v)) com::add_ref(o);
     mem::wr32(arg(c, 1), v);
     ret(c, D3D_OK);
 }
 void dev_SetFVF(cpu::Cpu& c) {
     Device* d = dev(c);
-    d->fvf = arg(c, 1);
-    d->vdecl = 0;
+    d->target().fvf = arg(c, 1);
+    d->target().vdecl = 0;
+    if (StateMask* m = d->mask()) m->vdecl = true;
     ret(c, D3D_OK);
 }
 void dev_GetFVF(cpu::Cpu& c) {
-    mem::wr32(arg(c, 1), dev(c)->fvf);
+    mem::wr32(arg(c, 1), dev(c)->st.fvf);
     ret(c, D3D_OK);
 }
 
@@ -1289,21 +1554,25 @@ void dev_CreatePixelShader(cpu::Cpu& c) {
     ret(c, D3D_OK);
 }
 void dev_SetVertexShader(cpu::Cpu& c) {
-    dev(c)->vs = arg(c, 1);
+    Device* d = dev(c);
+    d->target().vs = arg(c, 1);
+    if (StateMask* m = d->mask()) m->vs = true;
     ret(c, D3D_OK);
 }
 void dev_GetVertexShader(cpu::Cpu& c) {
-    uint32_t v = dev(c)->vs;
+    uint32_t v = dev(c)->st.vs;
     if (com::Object* o = com::from_guest(v)) com::add_ref(o);
     mem::wr32(arg(c, 1), v);
     ret(c, D3D_OK);
 }
 void dev_SetPixelShader(cpu::Cpu& c) {
-    dev(c)->ps = arg(c, 1);
+    Device* d = dev(c);
+    d->target().ps = arg(c, 1);
+    if (StateMask* m = d->mask()) m->ps = true;
     ret(c, D3D_OK);
 }
 void dev_GetPixelShader(cpu::Cpu& c) {
-    uint32_t v = dev(c)->ps;
+    uint32_t v = dev(c)->st.ps;
     if (com::Object* o = com::from_guest(v)) com::add_ref(o);
     mem::wr32(arg(c, 1), v);
     ret(c, D3D_OK);
@@ -1313,40 +1582,57 @@ template <int Bank, bool Set>
 void dev_ShaderConst(cpu::Cpu& c) {
     // Bank: 0 VS float, 1 VS int, 2 VS bool, 3 PS float, 4 PS int, 5 PS bool
     Device* d = dev(c);
+    State& s = Set ? d->target() : d->st;
+    StateMask* m = Set ? d->mask() : nullptr;
     uint32_t start = arg(c, 1), data = arg(c, 2), count = arg(c, 3);
     void* base;
     uint32_t elem, limit;
     switch (Bank) {
-        case 0: base = d->vs_f; elem = 16; limit = 256; break;
-        case 1: base = d->vs_i; elem = 16; limit = 16; break;
-        case 2: base = d->vs_b; elem = 4; limit = 16; break;
-        case 3: base = d->ps_f; elem = 16; limit = 224; break;
-        case 4: base = d->ps_i; elem = 16; limit = 16; break;
-        default: base = d->ps_b; elem = 4; limit = 16; break;
+        case 0: base = s.vs_f; elem = 16; limit = 256; break;
+        case 1: base = s.vs_i; elem = 16; limit = 16; break;
+        case 2: base = s.vs_b; elem = 4; limit = 16; break;
+        case 3: base = s.ps_f; elem = 16; limit = 224; break;
+        case 4: base = s.ps_i; elem = 16; limit = 16; break;
+        default: base = s.ps_b; elem = 4; limit = 16; break;
     }
     if (start >= limit) return ret(c, D3DERR_INVALIDCALL);
     if (start + count > limit) count = limit - start;
     uint8_t* p = (uint8_t*)base + start * elem;
-    if (Set)
+    if (Set) {
         memcpy(p, mem::ptr(data), count * elem);
-    else
+        if (m) {
+            for (uint32_t i = start; i < start + count; ++i) {
+                switch (Bank) {
+                    case 0: m->vs_f.set(i); break;
+                    case 1: m->vs_i.set(i); break;
+                    case 2: m->vs_b.set(i); break;
+                    case 3: m->ps_f.set(i); break;
+                    case 4: m->ps_i.set(i); break;
+                    default: m->ps_b.set(i); break;
+                }
+            }
+        }
+    } else {
         memcpy(mem::ptr(data), p, count * elem);
+    }
     ret(c, D3D_OK);
 }
 
 void dev_SetStreamSource(cpu::Cpu& c) {
+    Device* d = dev(c);
     uint32_t n = arg(c, 1);
     if (n >= 16) return ret(c, D3DERR_INVALIDCALL);
-    Stream& s = dev(c)->streams[n];
+    Stream& s = d->target().streams[n];
     s.vb = arg(c, 2);
     s.offset = arg(c, 3);
     s.stride = arg(c, 4);
+    if (StateMask* m = d->mask()) m->streams.set(n);
     ret(c, D3D_OK);
 }
 void dev_GetStreamSource(cpu::Cpu& c) {
     uint32_t n = arg(c, 1);
     if (n >= 16) return ret(c, D3DERR_INVALIDCALL);
-    Stream& s = dev(c)->streams[n];
+    Stream& s = dev(c)->st.streams[n];
     if (com::Object* o = com::from_guest(s.vb)) com::add_ref(o);
     mem::wr32(arg(c, 2), s.vb);
     mem::wr32(arg(c, 3), s.offset);
@@ -1355,15 +1641,22 @@ void dev_GetStreamSource(cpu::Cpu& c) {
 }
 void dev_SetStreamSourceFreq(cpu::Cpu& c) {
     uint32_t n = arg(c, 1);
-    if (n < 16) dev(c)->streams[n].freq = arg(c, 2);
+    if (n < 16) dev(c)->target().streams[n].freq = arg(c, 2);
+    ret(c, D3D_OK);
+}
+void dev_GetStreamSourceFreq(cpu::Cpu& c) {
+    uint32_t n = arg(c, 1);
+    mem::wr32(arg(c, 2), n < 16 ? dev(c)->st.streams[n].freq : 1);
     ret(c, D3D_OK);
 }
 void dev_SetIndices(cpu::Cpu& c) {
-    dev(c)->indices = arg(c, 1);
+    Device* d = dev(c);
+    d->target().indices = arg(c, 1);
+    if (StateMask* m = d->mask()) m->indices = true;
     ret(c, D3D_OK);
 }
 void dev_GetIndices(cpu::Cpu& c) {
-    uint32_t v = dev(c)->indices;
+    uint32_t v = dev(c)->st.indices;
     if (com::Object* o = com::from_guest(v)) com::add_ref(o);
     mem::wr32(arg(c, 1), v);
     ret(c, D3D_OK);
@@ -1384,8 +1677,14 @@ void dev_StretchRect(cpu::Cpu& c) {
     Device* d = dev(c);
     Surface* src = obj<Surface>(c, 1);
     Surface* dst = obj<Surface>(c, 3);
-    if (!src || !dst || !src->gl_tex || !dst->gl_tex) {
-        LOG_ONCE("StretchRect between non-render-target surfaces is not implemented");
+    if (!src || !dst || !gfx::make_current()) return ret(c, D3DERR_INVALIDCALL);
+    GLuint src_tex = surface_gl_texture(src);
+    if (!src_tex || !dst->gl_tex) {
+        if (src->mem && dst->format == src->format && !dst->gl_tex) {
+            copy_surface_mem(src, dst, arg(c, 2), 0);
+            return ret(c, D3D_OK);
+        }
+        LOG_ONCE("StretchRect: unsupported surface combination");
         return ret(c, D3D_OK);
     }
     auto rect = [](uint32_t r, Surface* s, int32_t out[4]) {
@@ -1403,12 +1702,12 @@ void dev_StretchRect(cpu::Cpu& c) {
     GLuint fbos[2];
     glGenFramebuffers(2, fbos);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbos[0]);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src->gl_tex, 0);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src_tex, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbos[1]);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst->gl_tex, 0);
-    // Flip Y: D3D rects are top-left based.
-    glBlitFramebuffer(sr[0], (GLint)src->h - sr[3], sr[2], (GLint)src->h - sr[1], dr[0], (GLint)dst->h - dr[3], dr[2],
-                      (GLint)dst->h - dr[1], GL_COLOR_BUFFER_BIT, arg(c, 5) == 1 ? GL_NEAREST : GL_LINEAR);
+    glDisable(GL_SCISSOR_TEST);
+    glBlitFramebuffer(sr[0], sr[1], sr[2], sr[3], dr[0], dr[1], dr[2], dr[3], GL_COLOR_BUFFER_BIT,
+                      arg(c, 5) == 1 ? GL_NEAREST : GL_LINEAR);
     glDeleteFramebuffers(2, fbos);
     d->targets_dirty = true;
     ret(c, D3D_OK);
@@ -1454,12 +1753,12 @@ const com::Method kDeviceMethods[] = {
     DEV_M("CreateIndexBuffer", 28, dev_CreateIndexBuffer),
     DEV_M("CreateRenderTarget", 36, dev_CreateRenderTarget),
     DEV_M("CreateDepthStencilSurface", 36, dev_CreateDepthStencilSurface),
-    DEV_M("UpdateSurface", 20, nullptr),
-    DEV_M("UpdateTexture", 12, nullptr),
-    DEV_M("GetRenderTargetData", 12, nullptr),
+    DEV_M("UpdateSurface", 20, dev_UpdateSurface),
+    DEV_M("UpdateTexture", 12, dev_UpdateTexture),
+    DEV_M("GetRenderTargetData", 12, dev_GetRenderTargetData),
     DEV_M("GetFrontBufferData", 12, nullptr),
     DEV_M("StretchRect", 24, dev_StretchRect),
-    DEV_M("ColorFill", 16, nullptr),
+    DEV_M("ColorFill", 16, dev_ColorFill),
     DEV_M("CreateOffscreenPlainSurface", 28, dev_CreateOffscreenPlainSurface),
     DEV_M("SetRenderTarget", 12, dev_SetRenderTarget),
     DEV_M("GetRenderTarget", 12, dev_GetRenderTarget),
@@ -1470,17 +1769,17 @@ const com::Method kDeviceMethods[] = {
     DEV_M("Clear", 28, dev_Clear),
     DEV_M("SetTransform", 12, dev_SetTransform),
     DEV_M("GetTransform", 12, dev_GetTransform),
-    DEV_M("MultiplyTransform", 12, nullptr),
+    DEV_M("MultiplyTransform", 12, dev_MultiplyTransform),
     DEV_M("SetViewport", 8, dev_SetViewport),
     DEV_M("GetViewport", 8, dev_GetViewport),
     DEV_M("SetMaterial", 8, dev_SetMaterial),
     DEV_M("GetMaterial", 8, dev_GetMaterial),
     DEV_M("SetLight", 12, dev_SetLight),
-    DEV_M("GetLight", 12, nullptr),
+    DEV_M("GetLight", 12, dev_GetLight),
     DEV_M("LightEnable", 12, dev_LightEnable),
-    DEV_M("GetLightEnable", 12, nullptr),
+    DEV_M("GetLightEnable", 12, dev_GetLightEnable),
     DEV_M("SetClipPlane", 12, dev_SetClipPlane),
-    DEV_M("GetClipPlane", 12, nullptr),
+    DEV_M("GetClipPlane", 12, dev_GetClipPlane),
     DEV_M("SetRenderState", 12, dev_SetRenderState),
     DEV_M("GetRenderState", 12, dev_GetRenderState),
     DEV_M("CreateStateBlock", 12, dev_CreateStateBlock),
@@ -1527,7 +1826,7 @@ const com::Method kDeviceMethods[] = {
     DEV_M("SetStreamSource", 20, dev_SetStreamSource),
     DEV_M("GetStreamSource", 20, dev_GetStreamSource),
     DEV_M("SetStreamSourceFreq", 12, dev_SetStreamSourceFreq),
-    DEV_M("GetStreamSourceFreq", 12, nullptr),
+    DEV_M("GetStreamSourceFreq", 12, dev_GetStreamSourceFreq),
     DEV_M("SetIndices", 8, dev_SetIndices),
     DEV_M("GetIndices", 8, dev_GetIndices),
     DEV_M("CreatePixelShader", 12, dev_CreatePixelShader),

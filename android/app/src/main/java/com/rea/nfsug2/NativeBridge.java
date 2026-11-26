@@ -25,6 +25,8 @@ public final class NativeBridge {
     public static final int BTN_B = 0x2000;
     public static final int BTN_X = 0x4000;
     public static final int BTN_Y = 0x8000;
+    /** Overlay-only menu button: sent to the game as the Enter key. */
+    public static final int BTN_OK = 0x10000;
 
     /** Input sources; the native side merges them so touch and controller can coexist. */
     public static final int SOURCE_TOUCH = 0;
