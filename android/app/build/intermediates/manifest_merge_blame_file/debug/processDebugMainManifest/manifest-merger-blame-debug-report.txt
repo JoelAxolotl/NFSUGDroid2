@@ -1,0 +1,83 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.rea.nfsug2"
+4    android:versionCode="1"
+5    android:versionName="0.1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="29"
+9        android:targetSdkVersion="34" />
+10
+11    <uses-feature
+11-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:4:5-78
+12        android:glEsVersion="0x00030002"
+12-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:4:19-51
+13        android:required="true" />
+13-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:4:52-75
+14    <uses-feature
+14-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:5:5-86
+15        android:name="android.hardware.gamepad"
+15-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:5:19-58
+16        android:required="false" />
+16-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:5:59-83
+17    <uses-feature
+17-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:6:5-90
+18        android:name="android.hardware.touchscreen"
+18-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:6:19-62
+19        android:required="false" />
+19-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:6:63-87
+20
+21    <application
+21-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:8:5-34:19
+22        android:appCategory="game"
+22-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:13:9-35
+23        android:debuggable="true"
+24        android:extractNativeLibs="false"
+25        android:hasCode="true"
+25-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:11:9-31
+26        android:icon="@android:drawable/sym_def_app_icon"
+26-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:10:9-58
+27        android:isGame="true"
+27-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:12:9-30
+28        android:label="NFS Underground 2"
+28-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:9:9-42
+29        android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen" >
+29-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:14:9-82
+30        <activity
+30-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:16:9-24:20
+31            android:name="com.rea.nfsug2.LauncherActivity"
+31-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:17:13-45
+32            android:exported="true"
+32-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:18:13-36
+33            android:screenOrientation="sensorLandscape" >
+33-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:19:13-56
+34            <intent-filter>
+34-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:20:13-23:29
+35                <action android:name="android.intent.action.MAIN" />
+35-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:21:17-69
+35-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:21:25-66
+36
+37                <category android:name="android.intent.category.LAUNCHER" />
+37-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:22:17-77
+37-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:22:27-74
+38            </intent-filter>
+39        </activity>
+40        <activity
+40-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:26:9-33:144
+41            android:name="com.rea.nfsug2.GameActivity"
+41-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:27:13-41
+42            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density"
+42-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:33:13-141
+43            android:exported="false"
+43-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:28:13-37
+44            android:launchMode="singleTask"
+44-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:30:13-44
+45            android:process=":game"
+45-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:29:13-36
+46            android:resizeableActivity="false"
+46-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:32:13-47
+47            android:screenOrientation="sensorLandscape" />
+47-->E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\AndroidManifest.xml:31:13-56
+48    </application>
+49
+50</manifest>

@@ -1,0 +1,7 @@
+com.rea.nfsug2.app-pngs-0 E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\build\generated\res\pngs\debug
+com.rea.nfsug2.app-resValues-1 E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\build\generated\res\resValues\debug
+com.rea.nfsug2.app-packageDebugResources-2 E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\build\intermediates\incremental\debug\packageDebugResources\merged.dir
+com.rea.nfsug2.app-packageDebugResources-3 E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\build\intermediates\incremental\debug\packageDebugResources\stripped.dir
+com.rea.nfsug2.app-debug-4 E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\build\intermediates\merged_res\debug\mergeDebugResources
+com.rea.nfsug2.app-debug-5 E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\debug\res
+com.rea.nfsug2.app-main-6 E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\res

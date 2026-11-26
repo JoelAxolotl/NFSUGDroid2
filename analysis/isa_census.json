@@ -1,0 +1,597 @@
+{
+ "relocs": 91105,
+ "relocs_in_text": 71093,
+ "seeds": 12797,
+ "decoded_insns": 1130742,
+ "decode_failures": 62,
+ "distinct_mnemonics": 338,
+ "simd_groups": {
+  "sse1": 3619,
+  "sse2": 2504,
+  "3dnow": 2676,
+  "mmx": 13991
+ },
+ "x87_insns": 111238,
+ "top_mnemonics": [
+  [
+   "mov",
+   311427
+  ],
+  [
+   "push",
+   154255
+  ],
+  [
+   "call",
+   68402
+  ],
+  [
+   "cmp",
+   51267
+  ],
+  [
+   "add",
+   46804
+  ],
+  [
+   "pop",
+   46110
+  ],
+  [
+   "test",
+   42644
+  ],
+  [
+   "je",
+   42191
+  ],
+  [
+   "lea",
+   33515
+  ],
+  [
+   "fld",
+   31429
+  ],
+  [
+   "jne",
+   27406
+  ],
+  [
+   "jmp",
+   24697
+  ],
+  [
+   "ret",
+   24511
+  ],
+  [
+   "fstp",
+   21404
+  ],
+  [
+   "xor",
+   20317
+  ],
+  [
+   "fmul",
+   18385
+  ],
+  [
+   "inc",
+   11401
+  ],
+  [
+   "and",
+   9296
+  ],
+  [
+   "sub",
+   8583
+  ],
+  [
+   "jl",
+   7401
+  ],
+  [
+   "faddp",
+   6947
+  ],
+  [
+   "dec",
+   5969
+  ],
+  [
+   "fadd",
+   5931
+  ],
+  [
+   "fnstsw",
+   5730
+  ],
+  [
+   "movq",
+   5626
+  ],
+  [
+   "movzx",
+   5608
+  ],
+  [
+   "or",
+   4969
+  ],
+  [
+   "shl",
+   4838
+  ],
+  [
+   "fcomp",
+   4422
+  ],
+  [
+   "fsub",
+   4164
+  ],
+  [
+   "jle",
+   3962
+  ],
+  [
+   "jbe",
+   3502
+  ],
+  [
+   "jb",
+   3363
+  ],
+  [
+   "imul",
+   3151
+  ],
+  [
+   "movsx",
+   3055
+  ],
+  [
+   "jge",
+   2836
+  ],
+  [
+   "shr",
+   2553
+  ],
+  [
+   "fild",
+   2524
+  ],
+  [
+   "jp",
+   2268
+  ],
+  [
+   "fxch",
+   2148
+  ],
+  [
+   "nop",
+   2034
+  ],
+  [
+   "paddw",
+   1628
+  ],
+  [
+   "ja",
+   1601
+  ],
+  [
+   "jg",
+   1460
+  ],
+  [
+   "fst",
+   1377
+  ],
+  [
+   "pfmul",
+   1315
+  ],
+  [
+   "jnp",
+   1216
+  ],
+  [
+   "leave",
+   1199
+  ],
+  [
+   "sar",
+   1191
+  ],
+  [
+   "jae",
+   1093
+  ],
+  [
+   "movaps",
+   915
+  ],
+  [
+   "rep movsd",
+   899
+  ],
+  [
+   "rep stosd",
+   889
+  ],
+  [
+   "fcom",
+   871
+  ],
+  [
+   "neg",
+   827
+  ],
+  [
+   "sbb",
+   779
+  ],
+  [
+   "fchs",
+   777
+  ],
+  [
+   "pfadd",
+   746
+  ],
+  [
+   "psubw",
+   684
+  ],
+  [
+   "fldz",
+   643
+  ]
+ ],
+ "all_mnemonics": {
+  "mov": 311427,
+  "add": 46804,
+  "dec": 5969,
+  "jne": 27406,
+  "movzx": 5608,
+  "inc": 11401,
+  "cmp": 51267,
+  "jl": 7401,
+  "test": 42644,
+  "pop": 46110,
+  "je": 42191,
+  "push": 154255,
+  "call": 68402,
+  "ret": 24511,
+  "sub": 8583,
+  "xor": 20317,
+  "jmp": 24697,
+  "jle": 3962,
+  "lea": 33515,
+  "repe cmpsb": 250,
+  "neg": 827,
+  "sbb": 779,
+  "and": 9296,
+  "ja": 1601,
+  "jb": 3363,
+  "movsx": 3055,
+  "shl": 4838,
+  "div": 214,
+  "jge": 2836,
+  "jg": 1460,
+  "or": 4969,
+  "leave": 1199,
+  "sar": 1191,
+  "jns": 398,
+  "jae": 1093,
+  "int3": 41,
+  "jbe": 3502,
+  "xchg": 120,
+  "shr": 2553,
+  "imul": 3151,
+  "rep stosd": 889,
+  "not": 243,
+  "rep movsd": 899,
+  "std": 53,
+  "cld": 27,
+  "cdq": 612,
+  "jecxz": 10,
+  "repne scasb": 3,
+  "js": 155,
+  "fld": 31429,
+  "popfd": 35,
+  "movsb": 58,
+  "fmul": 18385,
+  "fstp": 21404,
+  "fadd": 5931,
+  "fild": 2524,
+  "fimul": 46,
+  "shrd": 4,
+  "nop": 2034,
+  "sete": 636,
+  "fst": 1377,
+  "fistp": 129,
+  "fsubp": 435,
+  "adc": 187,
+  "setge": 42,
+  "setne": 558,
+  "fcomp": 4422,
+  "fnstsw": 5730,
+  "jp": 2268,
+  "fdiv": 598,
+  "jnp": 1216,
+  "fxch": 2148,
+  "fsub": 4164,
+  "faddp": 6947,
+  "fdivr": 287,
+  "fidiv": 40,
+  "fcom": 871,
+  "fsubr": 630,
+  "fabs": 474,
+  "fmulp": 242,
+  "fchs": 777,
+  "fdivp": 196,
+  "fsubrp": 18,
+  "fcompp": 174,
+  "stosw": 143,
+  "idiv": 411,
+  "rep stosb": 156,
+  "setl": 33,
+  "rep movsb": 453,
+  "fsqrt": 315,
+  "movsw": 7,
+  "fiadd": 15,
+  "repe cmpsw": 2,
+  "stosb": 133,
+  "repe cmpsd": 31,
+  "rep stosw": 3,
+  "setg": 39,
+  "rcr": 9,
+  "mul": 72,
+  "stosd": 619,
+  "fldz": 643,
+  "fucompp": 259,
+  "wait": 70,
+  "fnstcw": 30,
+  "fldcw": 45,
+  "fld1": 211,
+  "fldln2": 19,
+  "fyl2x": 20,
+  "stmxcsr": 4,
+  "movlpd": 65,
+  "andpd": 22,
+  "movsd": 361,
+  "psrlq": 174,
+  "pextrw": 21,
+  "orpd": 8,
+  "mulsd": 43,
+  "movapd": 28,
+  "movd": 557,
+  "psubq": 1,
+  "cvtdq2pd": 1,
+  "addpd": 8,
+  "addsd": 41,
+  "subsd": 21,
+  "unpcklpd": 4,
+  "xorpd": 8,
+  "pinsrw": 5,
+  "cvtsd2si": 1,
+  "pshufd": 10,
+  "mulpd": 21,
+  "psllq": 65,
+  "pcmpeqd": 14,
+  "pmovmskb": 8,
+  "psubd": 8,
+  "pxor": 374,
+  "pmaxsw": 4,
+  "divsd": 1,
+  "fnclex": 2,
+  "fdivrp": 19,
+  "fldpi": 2,
+  "fscale": 8,
+  "sahf": 32,
+  "frndint": 5,
+  "f2xm1": 2,
+  "fnsave": 5,
+  "frstor": 7,
+  "shld": 3,
+  "movq": 5626,
+  "ucomisd": 2,
+  "cmpltpd": 2,
+  "fpatan": 11,
+  "fcos": 7,
+  "fsin": 11,
+  "femms": 133,
+  "pfmul": 1315,
+  "punpckldq": 570,
+  "punpckhdq": 593,
+  "pfadd": 746,
+  "pand": 380,
+  "pfacc": 99,
+  "pfrsqrt": 19,
+  "pfcmpgt": 13,
+  "pfrsqit1": 19,
+  "pfrcpit2": 41,
+  "aaa": 15,
+  "cmpsd": 9,
+  "cli": 9,
+  "sti": 24,
+  "enter": 12,
+  "setle": 95,
+  "rep movsw": 3,
+  "paddw": 1628,
+  "in": 53,
+  "retf": 13,
+  "arpl": 36,
+  "les": 16,
+  "pfsub": 147,
+  "salc": 10,
+  "fisub": 13,
+  "cmc": 10,
+  "ror": 13,
+  "fisttp": 7,
+  "aas": 7,
+  "insd": 35,
+  "outsd": 48,
+  "int1": 17,
+  "sets": 6,
+  "rol": 16,
+  "rcl": 27,
+  "lgdt": 1,
+  "xlatb": 8,
+  "stc": 8,
+  "pmullw": 531,
+  "psraw": 495,
+  "punpcklwd": 141,
+  "punpcklqdq": 10,
+  "movdqa": 566,
+  "clc": 15,
+  "bnd js": 1,
+  "loop": 12,
+  "insb": 25,
+  "outsb": 39,
+  "hlt": 10,
+  "jno": 7,
+  "daa": 8,
+  "sal": 18,
+  "out": 33,
+  "psrlw": 100,
+  "punpcklbw": 491,
+  "punpckhbw": 239,
+  "pcmpeqw": 15,
+  "psllw": 41,
+  "psubw": 684,
+  "pandn": 65,
+  "psubusw": 142,
+  "por": 273,
+  "packuswb": 211,
+  "punpckhwd": 103,
+  "fist": 17,
+  "fisubr": 7,
+  "fnstenv": 2,
+  "int": 23,
+  "pmulhw": 236,
+  "psubsw": 262,
+  "paddsw": 449,
+  "punpckhqdq": 8,
+  "ljmp": 8,
+  "cpuid": 26,
+  "movdq2q": 21,
+  "movq2dq": 25,
+  "psrldq": 16,
+  "repne insb": 1,
+  "pushal": 74,
+  "packsswb": 8,
+  "pfrcp": 24,
+  "pfrcpit1": 22,
+  "pfcmpge": 21,
+  "pf2id": 2,
+  "pi2fd": 8,
+  "pfsubr": 27,
+  "pcmpgtd": 3,
+  "pslld": 23,
+  "movdqu": 27,
+  "psrld": 47,
+  "pfmax": 1,
+  "pfmin": 1,
+  "psrad": 65,
+  "bts": 2,
+  "bt": 2,
+  "into": 8,
+  "fprem": 5,
+  "fldenv": 1,
+  "emms": 31,
+  "popal": 32,
+  "setb": 1,
+  "lahf": 28,
+  "fsincos": 9,
+  "paddb": 42,
+  "paddusb": 33,
+  "psubusb": 96,
+  "pcmpgtb": 30,
+  "paddsb": 20,
+  "psubsb": 20,
+  "packssdw": 36,
+  "rdtsc": 12,
+  "aam": 8,
+  "bound": 11,
+  "cwde": 28,
+  "jo": 10,
+  "loope": 17,
+  "cmpsb": 13,
+  "aad": 8,
+  "movss": 382,
+  "shufps": 418,
+  "movaps": 915,
+  "movlps": 198,
+  "unpcklps": 47,
+  "movlhps": 27,
+  "movhlps": 44,
+  "mulps": 551,
+  "addps": 367,
+  "unpckhps": 32,
+  "pushfd": 46,
+  "seta": 2,
+  "lodsb": 10,
+  "loopne": 7,
+  "rcpps": 8,
+  "subps": 72,
+  "movups": 69,
+  "fbstp": 1,
+  "setns": 1,
+  "lodsd": 10,
+  "ficomp": 2,
+  "lds": 1,
+  "das": 13,
+  "xorps": 27,
+  "andps": 20,
+  "paddd": 275,
+  "cmpneqps": 2,
+  "andnps": 4,
+  "orps": 4,
+  "sldt": 1,
+  "lcall": 17,
+  "scasb": 11,
+  "scasd": 16,
+  "movhps": 179,
+  "fxam": 3,
+  "iretd": 14,
+  "addss": 53,
+  "rsqrtss": 12,
+  "mulss": 133,
+  "subss": 24,
+  "fcmovbe": 1,
+  "comiss": 8,
+  "fldl2e": 2,
+  "ftst": 3,
+  "pfcmpeq": 3,
+  "cvtdq2ps": 2,
+  "fcmovb": 1,
+  "pswapd": 19,
+  "pfnacc": 7,
+  "pmaddwd": 257,
+  "cvtpi2ps": 11,
+  "fptan": 1,
+  "fidivr": 2,
+  "movntps": 4,
+  "cvtsi2ss": 1,
+  "movntq": 25,
+  "sysenter": 1,
+  "subpd": 3,
+  "unpckhpd": 2,
+  "paddq": 1,
+  "cmpnlepd": 2,
+  "rcpss": 3,
+  "psubb": 22,
+  "fbld": 1,
+  "pfpnacc": 9,
+  "ffree": 13,
+  "lock or": 1
+ }
+}

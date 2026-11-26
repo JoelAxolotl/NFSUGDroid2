@@ -1,0 +1,1 @@
+E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\src\main\cpp\CMakeLists.txt
