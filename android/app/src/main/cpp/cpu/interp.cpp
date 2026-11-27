@@ -907,6 +907,7 @@ thread_local bool t_interpreting = false;
 
 // One dispatch step: HLE thunk, translated function, or one interpreted instruction.
 inline void dispatch_one(Cpu& c) {
+    check_suspend(c);
     if (c.eip - hle::kThunkBase < hle::kThunkSpan) {
         hle::dispatch(c);
         t_interpreting = false;

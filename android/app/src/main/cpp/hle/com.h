@@ -23,6 +23,9 @@ struct Object {
     virtual ~Object() = default;
     uint32_t guest = 0;                 // guest address of the COM object
     std::atomic<uint32_t> refs{1};
+    // When set, AddRef/Release act on this object instead (D3D9 texture surfaces share
+    // their container's reference count); the owner destroys this object itself.
+    Object* ref_owner = nullptr;
     const uint32_t* iids = nullptr;     // GUIDs (4 dwords each) answered by QueryInterface
     uint32_t iid_count = 0;
 };
@@ -43,6 +46,7 @@ T* self(cpu::Cpu& c) {
 
 uint32_t add_ref(Object* o);
 uint32_t release(Object* o);  // destroys the host object and frees guest memory at 0
+void destroy(Object* o);      // unconditionally destroys (owners of ref_owner objects)
 
 // Generic IUnknown implementations usable directly in method tables.
 void QueryInterface(cpu::Cpu& c);

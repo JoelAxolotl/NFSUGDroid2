@@ -35,7 +35,10 @@ struct ShaderInfo {
 
 // `ps1_dims` supplies sampler dimensions for ps_1_x shaders, which do not
 // declare them (taken from the textures bound at draw time). May be null.
-ShaderInfo translate_shader(const std::vector<uint32_t>& tokens, const uint8_t* ps1_dims);
+// `ps1_proj` (ps_1_1..1_3 only, may be null): per texture stage, 0 or 1 + the
+// component that D3DTTFF_PROJECTED divides by (from D3DTSS_TEXTURETRANSFORMFLAGS).
+ShaderInfo translate_shader(const std::vector<uint32_t>& tokens, const uint8_t* ps1_dims,
+                            const uint8_t* ps1_proj = nullptr);
 
 // Shared GLSL snippets.
 const char* glsl_vs_epilogue();   // void d3d_emit_position(vec4 p)

@@ -5,7 +5,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -117,6 +120,7 @@ void thread_main(Thread* t) {
     cpu::push32(c, t->param);
     cpu::push32(c, g_thread_return_thunk);
     c.eip = t->start;
+    __atomic_store_n(&c.in_host, 0, __ATOMIC_SEQ_CST);  // from here on it runs guest code
     LOGI("thread %x start %08x(%08x)", t->tid, t->start, t->param);
     cpu::Stop s = cpu::run(c);
     report_stop(t, s);
@@ -212,6 +216,7 @@ uint32_t create_thread(uint32_t start, uint32_t param, uint32_t stack_size, bool
     t->start = start;
     t->param = param;
     t->suspend_count = suspended ? 1 : 0;
+    t->ctx.in_host = 1;  // not running guest code until thread_main starts it
     t->refs.fetch_add(1);  // the running host thread holds a reference
     uint32_t h = kobj::add(t);
     if (tid_out) *tid_out = t->tid;
@@ -225,10 +230,56 @@ uint32_t resume_thread(Thread* t) {
         std::lock_guard<std::mutex> lk(kobj::wait_mutex());
         prev = t->suspend_count;
         if (t->suspend_count) t->suspend_count--;
+        if (t->suspend_count == 0) __atomic_store_n(&t->ctx.suspend_req, 0, __ATOMIC_SEQ_CST);
     }
     kobj::notify();
     return prev;
 }
+
+// SuspendThread. Recompiled code cannot be stopped at an arbitrary instruction, so
+// the target stops at its next safe point (guest function entry, interpreter step,
+// return from host code). Like on Windows, this returns once the target no longer
+// runs guest code: it is parked, or inside host code that parks before returning.
+// NFSU2 relies on this: its audio library is not reentrant, and the main thread
+// suspends the audio thread around its own calls into it.
+uint32_t suspend_thread(Thread* t) {
+    uint32_t prev;
+    {
+        std::lock_guard<std::mutex> lk(kobj::wait_mutex());
+        prev = t->suspend_count++;
+        if (t->exited) return prev;
+        __atomic_store_n(&t->ctx.suspend_req, 1, __ATOMIC_SEQ_CST);
+    }
+    if (t == t_thread) return prev;  // parks when this HLE call returns
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    std::unique_lock<std::mutex> lk(kobj::wait_mutex());
+    while (!t->parked && !t->exited && __atomic_load_n(&t->ctx.in_host, __ATOMIC_SEQ_CST) == 0) {
+        if (kobj::wait_cv().wait_until(lk, std::min(deadline, std::chrono::steady_clock::now() +
+                                                                  std::chrono::milliseconds(1))) ==
+                std::cv_status::timeout &&
+            std::chrono::steady_clock::now() >= deadline) {
+            LOGW("SuspendThread: thread %x did not reach a safe point in 500 ms (eip %08x)", t->tid, t->ctx.eip);
+            break;
+        }
+    }
+    return prev;
+}
+}  // namespace proc
+
+namespace cpu {
+void safepoint(Cpu& c) {
+    proc::Thread* t = proc::current_thread();
+    if (!t || &t->ctx != &c) return;
+    std::unique_lock<std::mutex> lk(kobj::wait_mutex());
+    if (t->suspend_count == 0) return;
+    t->parked = true;
+    kobj::wait_cv().notify_all();  // wake the suspender
+    kobj::wait_cv().wait(lk, [t] { return t->suspend_count == 0; });
+    t->parked = false;
+}
+}  // namespace cpu
+
+namespace proc {
 
 void exit_current_thread(cpu::Cpu& c, uint32_t code) {
     if (Thread* t = t_thread) t->exit_code = code;

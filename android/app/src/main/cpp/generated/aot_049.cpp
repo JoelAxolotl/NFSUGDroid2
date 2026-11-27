@@ -10625,12 +10625,14 @@ L_00765717:
   }
   {
     uint32_t a = R0 & 0xFFFFFFFFu, b = 0x7FFF0000u & 0xFFFFFFFFu;
-    uint32_t r = cpu::alu(c, 1, a, b, 4); R0 = r;
+    uint32_t r = aotrt::alu_nf(1, a, b, 4); R0 = r;
   }
   WR32((uint32_t)(R4 + 0x6u), R0);
   R0 = RD32((uint32_t)(R2 + 0x4u));
   R1 = RD32((uint32_t)(R2));
-  AOT_SYNC_OUT; c.eip = 0x76572Bu; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None || c.eip != 0x76572Fu) return;
+  {
+    uint32_t r = aotrt::shxd32(c, true, R0, R1, 11u, false); R0 = r;
+  }
   {
     uint32_t r = aotrt::shift_nf(4, R1, 11u, 4); R1 = r;
   }

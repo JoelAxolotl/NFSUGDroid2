@@ -29,7 +29,8 @@ struct Thread : kobj::Object {
     uint32_t stack_size = 0;
     uint32_t start = 0, param = 0;
     int32_t priority = 0;
-    uint32_t suspend_count = 0;
+    uint32_t suspend_count = 0;  // guarded by kobj::wait_mutex()
+    bool parked = false;         // stopped at a safe point (guarded by kobj::wait_mutex())
     bool exited = false;
     uint32_t exit_code = 0x103;  // STILL_ACTIVE
 };
@@ -51,7 +52,8 @@ uint32_t current_tid();
 
 // CreateThread. Returns the handle (0 on failure).
 uint32_t create_thread(uint32_t start, uint32_t param, uint32_t stack_size, bool suspended, uint32_t* tid_out);
-uint32_t resume_thread(Thread* t);  // returns previous suspend count
+uint32_t resume_thread(Thread* t);   // returns previous suspend count
+uint32_t suspend_thread(Thread* t);  // returns previous suspend count
 
 // ExitThread from inside an HLE call on the current thread.
 void exit_current_thread(cpu::Cpu& c, uint32_t code);

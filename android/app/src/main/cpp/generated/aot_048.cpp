@@ -9154,7 +9154,9 @@ L_0075C605:
   }
   if (aotrt::fc_sub(3, FA, FB, FR, 1)) goto L_0075C610;
 L_0075C60A:
-  AOT_SYNC_OUT; c.eip = 0x75C60Au; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None || c.eip != 0x75C60Du) return;
+  {
+    uint32_t r = aotrt::shxd32(c, false, R0, R2, (R1 & 0xFFu), true); R0 = r;
+  }
   {
     uint32_t r = cpu::shift(c, 7, R2, (R1 & 0xFFu), 4); R2 = r;
   }
@@ -12929,7 +12931,9 @@ L_0075D8E5:
   }
   if (aotrt::fc_sub(3, FA, FB, FR, 1)) goto L_0075D8F0;
 L_0075D8EA:
-  AOT_SYNC_OUT; c.eip = 0x75D8EAu; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None || c.eip != 0x75D8EDu) return;
+  {
+    uint32_t r = aotrt::shxd32(c, true, R2, R0, (R1 & 0xFFu), true); R2 = r;
+  }
   {
     uint32_t r = cpu::shift(c, 4, R0, (R1 & 0xFFu), 4); R0 = r;
   }

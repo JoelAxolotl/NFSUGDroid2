@@ -66,6 +66,7 @@ struct RegionInfo {
 // VirtualQuery: describes the run of same-state pages containing `addr`.
 RegionInfo query(uint32_t addr);
 bool is_committed(uint32_t addr, uint32_t size);
+uint32_t committed_bytes();  // total committed guest memory (diagnostics)
 
 // Convenience: committed RW block in the system range (never freed).
 uint32_t alloc_system(uint32_t size);

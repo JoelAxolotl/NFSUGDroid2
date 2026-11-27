@@ -18351,8 +18351,12 @@ L_0057B74A:
     uint32_t a = R5 & 0xFFFFFFFFu, b = R0 & 0xFFFFFFFFu;
     uint32_t r = cpu::alu(c, 2, a, b, 4); R5 = r;
   }
-  AOT_SYNC_OUT; c.eip = 0x57B756u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None || c.eip != 0x57B75Au) return;
-  AOT_SYNC_OUT; c.eip = 0x57B75Au; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None || c.eip != 0x57B75Eu) return;
+  {
+    uint32_t r = aotrt::shxd32(c, false, R7, R5, 11u, false); R7 = r;
+  }
+  {
+    uint32_t r = aotrt::shxd32(c, false, R2, R0, 11u, false); R2 = r;
+  }
   {
     uint32_t r = aotrt::shift_nf(5, R0, 11u, 4); R0 = r;
   }

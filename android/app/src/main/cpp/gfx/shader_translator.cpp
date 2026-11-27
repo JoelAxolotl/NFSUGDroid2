@@ -82,7 +82,8 @@ struct Param {
 
 class Translator {
 public:
-    Translator(const std::vector<uint32_t>& t, const uint8_t* dims) : t_(t), dims_(dims) {}
+    Translator(const std::vector<uint32_t>& t, const uint8_t* dims, const uint8_t* proj)
+        : t_(t), dims_(dims), proj_(proj) {}
 
     ShaderInfo run() {
         info_.ok = false;
@@ -127,6 +128,18 @@ public:
 private:
     const std::vector<uint32_t>& t_;
     const uint8_t* dims_;
+    const uint8_t* proj_ = nullptr;  // ps_1_1..1_3 projected texture stages (see translate_shader)
+
+    // Texture coordinate of stage m for ps_1_1..1_3 fetches, divided as D3DTTFF_PROJECTED asks.
+    std::string stage_coord(int m) {
+        std::string c = "D3D_T" + std::to_string(m);
+        if (!proj_ || m > 7 || !proj_[m]) return c;
+        std::string q = c + "." + std::string(1, "xyzw"[(proj_[m] - 1) & 3]);
+        return "vec4(" + c + ".xyz / " + q + ", 1.0)";
+    }
+    // Source t-register of a ps_1_x texture-addressing instruction, with its modifiers
+    // (texm3x3pad t1, t0_bx2 expands a normal map to [-1, 1]).
+    std::string tex_src(const Param& p) { return "(" + src(p) + ")"; }
     bool pixel_ = false;
     bool ps_tex_is_coord_ = false;
     uint32_t major_ = 0, minor_ = 0;
@@ -579,7 +592,7 @@ private:
                     if (!need(1)) return false;
                     int n = reg_num(a[0].tok);
                     textures_.insert(n);
-                    line("t" + std::to_string(n) + " = " + sampler_expr(n, "D3D_T" + std::to_string(n), 0) + ";");
+                    line("t" + std::to_string(n) + " = " + sampler_expr(n, stage_coord(n), 0) + ";");
                 }
                 return true;
             }
@@ -614,9 +627,10 @@ private:
                 if (!need(2)) return false;
                 int m = reg_num(a[0].tok), n = reg_num(a[1].tok);
                 textures_.insert(m);
-                std::string ms = std::to_string(m), tn = "t" + std::to_string(n);
-                line("{ vec2 uv = D3D_T" + ms + ".xy + vec2(u_bem[" + ms + "].x * " + tn + ".x + u_bem[" + ms + "].z * " +
-                     tn + ".y, u_bem[" + ms + "].y * " + tn + ".x + u_bem[" + ms + "].w * " + tn + ".y);");
+                (void)n;
+                std::string ms = std::to_string(m), tn = tex_src(a[1]);
+                line("{ vec2 uv = (" + stage_coord(m) + ").xy + vec2(u_bem[" + ms + "].x * " + tn + ".x + u_bem[" + ms +
+                     "].z * " + tn + ".y, u_bem[" + ms + "].y * " + tn + ".x + u_bem[" + ms + "].w * " + tn + ".y);");
                 line("  t" + ms + " = " + sampler_expr(m, "vec4(uv, 0.0, 1.0)", 0) + ";");
                 if (op == OP_TEXBEML)
                     line("  t" + ms + ".rgb *= clamp(" + tn + ".z * u_beml[" + ms + "].x + u_beml[" + ms + "].y, 0.0, 1.0);");
@@ -632,7 +646,8 @@ private:
                 std::string slot = (op == OP_TEXM3x3PAD && pad_rows_ == 1) ? "y" : "x";
                 pad_base_ = pad_rows_ == 0 ? m : pad_base_;
                 ++pad_rows_;
-                line("pad." + slot + " = dot(D3D_T" + std::to_string(m) + ".xyz, t" + std::to_string(n) + ".xyz);");
+                (void)n;
+                line("pad." + slot + " = dot(D3D_T" + std::to_string(m) + ".xyz, " + tex_src(a[1]) + ".xyz);");
                 return true;
             }
             case OP_TEXM3x2TEX: {
@@ -640,8 +655,9 @@ private:
                 int m = reg_num(a[0].tok), n = reg_num(a[1].tok);
                 textures_.insert(m);
                 line("t" + std::to_string(m) + " = " +
-                     sampler_expr(m, "vec4(pad.x, dot(D3D_T" + std::to_string(m) + ".xyz, t" + std::to_string(n) +
+                     sampler_expr(m, "vec4(pad.x, dot(D3D_T" + std::to_string(m) + ".xyz, " + tex_src(a[1]) +
                                          ".xyz), 0.0, 1.0)", 0) + ";");
+                (void)n;
                 pad_rows_ = 0;
                 return true;
             }
@@ -652,7 +668,8 @@ private:
                 if (!need(2)) return false;
                 int m = reg_num(a[0].tok), n = reg_num(a[1].tok);
                 textures_.insert(m);
-                std::string N = "vec3(pad.x, pad.y, dot(D3D_T" + std::to_string(m) + ".xyz, t" + std::to_string(n) + ".xyz))";
+                (void)n;
+                std::string N = "vec3(pad.x, pad.y, dot(D3D_T" + std::to_string(m) + ".xyz, " + tex_src(a[1]) + ".xyz))";
                 std::string tm = "t" + std::to_string(m);
                 if (op == OP_TEXM3x3) {
                     line(tm + " = vec4(" + N + ", 1.0);");
@@ -683,7 +700,8 @@ private:
                 if (!need(2)) return false;
                 int m = reg_num(a[0].tok), n = reg_num(a[1].tok);
                 textures_.insert(m);
-                std::string tn = "t" + std::to_string(n);
+                (void)n;
+                std::string tn = tex_src(a[1]);
                 std::string uv = op == OP_TEXREG2AR ? tn + ".wx" : op == OP_TEXREG2GB ? tn + ".yz" : tn + ".xyz";
                 line("t" + std::to_string(m) + " = " + sampler_expr(m, "vec4(" + uv + (op == OP_TEXREG2RGB ? ", 1.0)" : ", 0.0, 1.0)"), 0) + ";");
                 return true;
@@ -693,7 +711,8 @@ private:
                 if (!need(2)) return false;
                 int m = reg_num(a[0].tok), n = reg_num(a[1].tok);
                 textures_.insert(m);
-                std::string d = "dot(D3D_T" + std::to_string(m) + ".xyz, t" + std::to_string(n) + ".xyz)";
+                (void)n;
+                std::string d = "dot(D3D_T" + std::to_string(m) + ".xyz, " + tex_src(a[1]) + ".xyz)";
                 if (op == OP_TEXDP3)
                     line("t" + std::to_string(m) + " = vec4(" + d + ");");
                 else
@@ -908,8 +927,8 @@ const char* glsl_ps_common() {
            "}\n";
 }
 
-ShaderInfo translate_shader(const std::vector<uint32_t>& tokens, const uint8_t* ps1_dims) {
-    Translator tr(tokens, ps1_dims);
+ShaderInfo translate_shader(const std::vector<uint32_t>& tokens, const uint8_t* ps1_dims, const uint8_t* ps1_proj) {
+    Translator tr(tokens, ps1_dims, ps1_proj);
     return tr.run();
 }
 

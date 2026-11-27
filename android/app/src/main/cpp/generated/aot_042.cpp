@@ -7685,7 +7685,9 @@ L_006FA86B:
 L_006FA87B:
   R0 = RD32((uint32_t)(R5 + 0x8u));
   R0 = RD8((uint32_t)(R1 + R0));
-  AOT_SYNC_OUT; c.eip = 0x6FA882u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None || c.eip != 0x6FA886u) return;
+  {
+    uint32_t r = aotrt::shxd32(c, true, R7, R6, 8u, false); R7 = r;
+  }
   {
     uint32_t r = aotrt::shift_nf(4, R6, 8u, 4); R6 = r;
   }
@@ -17576,8 +17578,10 @@ L_006FEE9C:
   goto L_006FEEB4;
 L_006FEEA5:
   { uint64_t p = (uint64_t)R0 * (uint64_t)R1; R0 = (uint32_t)p; R2 = (uint32_t)(p >> 32);
-    cpu::put_flags(c, cpu::kArithFlags, cpu::szp_flags(R0, 4) | (R2 ? (cpu::CF | cpu::OF) : 0u)); }
-  AOT_SYNC_OUT; c.eip = 0x6FEEA7u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None || c.eip != 0x6FEEABu) return;
+     }
+  {
+    uint32_t r = aotrt::shxd32(c, false, R0, R2, 12u, false); R0 = r;
+  }
   {
     uint32_t r = aotrt::shift_nf(5, R2, 12u, 4); R2 = r;
   }

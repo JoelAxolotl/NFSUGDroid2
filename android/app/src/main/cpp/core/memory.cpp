@@ -141,6 +141,14 @@ bool release(uint32_t addr) {
     return true;
 }
 
+uint32_t committed_bytes() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    uint64_t pages = 0;
+    for (const auto& [a, r] : g_regions)
+        for (uint8_t f : r.committed) pages += f;
+    return (uint32_t)std::min<uint64_t>(pages * kPage, 0xFFFFFFFFu);
+}
+
 RegionInfo query(uint32_t addr) {
     std::lock_guard<std::mutex> lk(g_mu);
     RegionInfo ri{};

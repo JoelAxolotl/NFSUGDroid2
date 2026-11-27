@@ -1,3 +1,0 @@
-E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/.cxx/RelWithDebInfo/65v4d354/arm64-v8a/CMakeFiles/nfsug2.dir
-E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/.cxx/RelWithDebInfo/65v4d354/arm64-v8a/CMakeFiles/edit_cache.dir
-E:/Projecto/AI/Engineering/REA/Projects/Androids/NFSUG2/android/app/.cxx/RelWithDebInfo/65v4d354/arm64-v8a/CMakeFiles/rebuild_cache.dir

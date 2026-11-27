@@ -183,8 +183,11 @@ void dispatch(cpu::Cpu& c) {
             LOGD("[t%u] %s(%08x, %08x, %08x, %08x) from %08x", c.thread_id, t.name, arg(c, 0), arg(c, 1),
                  arg(c, 2), arg(c, 3), ret_addr);
     }
+    __atomic_add_fetch(&c.in_host, 1, __ATOMIC_SEQ_CST);
     t.fn(c);
+    __atomic_sub_fetch(&c.in_host, 1, __ATOMIC_SEQ_CST);
     if (c.stop != cpu::Stop::None) return;  // thread/process exit or fault inside the HLE call
+    cpu::check_suspend(c);
     c.r[cpu::ESP] += 4 + t.arg_bytes;
     c.eip = ret_addr;
 }
@@ -196,7 +199,10 @@ uint32_t call_guest(cpu::Cpu& c, uint32_t fn, std::initializer_list<uint32_t> ar
     cpu::push32(c, kReturnToHostThunk);
     c.eip = fn;
     c.host_call_depth++;
+    // The callback is guest code: while it runs, this thread is not "in host code".
+    const uint32_t saved_in_host = __atomic_exchange_n(&c.in_host, 0, __ATOMIC_SEQ_CST);
     cpu::Stop s = cpu::run(c);
+    __atomic_store_n(&c.in_host, saved_in_host, __ATOMIC_SEQ_CST);
     c.host_call_depth--;
     uint32_t result = c.r[cpu::EAX];
     if (s == cpu::Stop::ReturnToHost) {

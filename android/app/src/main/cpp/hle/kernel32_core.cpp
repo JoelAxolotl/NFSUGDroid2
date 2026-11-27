@@ -152,8 +152,8 @@ HLE_EXPORT(kernel32, ResumeThread, 4) {
     ret(c, t ? proc::resume_thread(t) : 0xFFFFFFFFu);
 }
 HLE_EXPORT(kernel32, SuspendThread, 4) {
-    LOG_ONCE("SuspendThread on a running thread is not supported; ignored");
-    ret(c, 0);
+    proc::Thread* t = thread_from_handle(arg(c, 0));
+    ret(c, t ? proc::suspend_thread(t) : 0xFFFFFFFFu);
 }
 HLE_EXPORT(kernel32, TerminateThread, 8) {
     LOG_ONCE("TerminateThread is not supported; ignored");

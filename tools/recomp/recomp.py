@@ -288,9 +288,13 @@ class Emitter:
             return FC, FALL
         if m in ("inc", "dec"):
             return 0, FO
-        if m in ("shl", "sal", "shr", "sar", "rol", "ror", "rcl", "rcr"):
+        if m in ("shl", "sal", "shr", "sar", "rol", "ror", "rcl", "rcr", "shld", "shrd"):
             if len(ops) == 2 and ops[1].type != X.X86_OP_IMM:
                 return FALL, 0  # count may be zero: flags may be preserved
+            if m in ("shld", "shrd"):
+                if ops[2].type != X.X86_OP_IMM:
+                    return FALL, 0
+                return (0, FALL) if (ops[2].imm & 0x1F) else (0, 0)
             cnt = 1 if len(ops) == 1 else (ops[1].imm & 0x1F)
             if cnt == 0:
                 return 0, 0
@@ -628,6 +632,23 @@ class Emitter:
             else:
                 self.L("    uint32_t r = cpu::shift(c, %d, %s, %s, %d); %s" %
                        (SHIFT[m], self.rd(ops[0], ea_var=ea), cnt, sz, self.wr(ops[0], "r", ea)))
+            self.L("  }")
+        elif m in ("shld", "shrd") and len(ops) == 3 and sz == 4 and ops[1].type == X.X86_OP_REG:
+            if ops[2].type == X.X86_OP_IMM:
+                cnt = "%du" % (ops[2].imm & 0x1F)
+            elif ops[2].type == X.X86_OP_REG and self.rc.md.reg_name(ops[2].reg) == "cl":
+                cnt = "(R1 & 0xFFu)"
+            else:
+                return self.fallback(ins)
+            self.L("  {")
+            ea = None
+            if ops[0].type == X.X86_OP_MEM:
+                self.L("    uint32_t ea = %s;" % self.ea(ops[0]))
+                ea = "ea"
+            flags = "true" if (ops[2].type != X.X86_OP_IMM or self.flags_live(ins)) else "false"
+            self.L("    uint32_t r = aotrt::shxd32(c, %s, %s, %s, %s, %s); %s" %
+                   ("true" if m == "shld" else "false", self.rd(ops[0], ea_var=ea), self.rd(ops[1]), cnt, flags,
+                    self.wr(ops[0], "r", ea)))
             self.L("  }")
         elif m == "imul" and len(ops) in (2, 3) and sz == 4:
             a_ = self.rd(ops[1] if len(ops) == 3 else ops[0])

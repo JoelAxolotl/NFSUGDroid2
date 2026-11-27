@@ -73,7 +73,20 @@ struct alignas(16) Cpu {
     uint32_t host_call_depth;
     uint32_t thread_id;
     uint64_t icount;
+    // SuspendThread support (accessed with __atomic builtins from other threads):
+    // suspend_req is set while the thread's suspend count is non-zero; the thread
+    // parks at its next safe point. in_host > 0 while it runs host (HLE) code, which
+    // counts as already suspended because it parks before running guest code again.
+    uint32_t suspend_req;
+    uint32_t in_host;
 };
+
+// Parks the current thread while it is suspended (runtime/process.cpp).
+void safepoint(Cpu& c);
+// Safe point: guest function entries and interpreter steps.
+inline void check_suspend(Cpu& c) {
+    if (__builtin_expect(__atomic_load_n(&c.suspend_req, __ATOMIC_ACQUIRE) != 0, 0)) safepoint(c);
+}
 
 inline uint32_t& reg(Cpu& c, int i) { return c.r[i]; }
 

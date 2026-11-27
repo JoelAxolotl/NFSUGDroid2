@@ -77,14 +77,16 @@ struct DrawCache {
 // ------------------------------------------------------------------ object cleanup
 Surface::~Surface() {
     if (mem) gheap::free(mem);
-    if (gl_tex) glDeleteTextures(1, &gl_tex);
+    if (gl_tex && !gl_shared) glDeleteTextures(1, &gl_tex);
     if (gl_rb) glDeleteRenderbuffers(1, &gl_rb);
     if (upload_tex) glDeleteTextures(1, &upload_tex);
 }
 Texture::~Texture() {
-    bool rt = usage & USAGE_RENDERTARGET;  // GL texture belongs to the level-0 surface
-    for (Surface* s : surfaces) com::release(s);
-    if (gl && !rt) glDeleteTextures(1, &gl);
+    // A 2D render target's GL texture belongs to its level-0 surface; a cube render
+    // target's cube map belongs to the texture (its faces only attach to it).
+    bool surface_owned = (usage & USAGE_RENDERTARGET) && !cube;
+    for (Surface* s : surfaces) com::destroy(s);
+    if (gl && !surface_owned) glDeleteTextures(1, &gl);
 }
 Buffer::~Buffer() {
     if (mem) gheap::free(mem);
@@ -312,16 +314,25 @@ PsStage ps_stage(Device* d, const State& s) {
         uint32_t ver = sh->tokens.empty() ? 0 : sh->tokens[0];
         uint32_t key = 0;
         uint8_t dims[16] = {};
+        uint8_t proj[8] = {};
         if (((ver >> 8) & 0xFF) < 2) {  // ps_1_x: variant per bound texture types
             for (int i = 0; i < 8; ++i) {
                 dims[i] = texture_dim(bound_texture(s, i));
                 key |= (uint32_t)(dims[i] == 3 ? 1 : 0) << i;
             }
+            // ps_1_1..1_3 honour D3DTTFF_PROJECTED on their texture fetches (ps_1_4 uses _dw).
+            if ((ver & 0xFF) < 4) {
+                for (int i = 0; i < 4; ++i) {
+                    uint32_t tf = s.tss[i][24];
+                    if (tf & 256) proj[i] = (uint8_t)((tf & 7) ? (tf & 7) : 4);
+                    key |= (uint32_t)proj[i] << (8 + 3 * i);
+                }
+            }
             key |= 0x80000000u;
         }
         auto it = sh->variants.find(key);
         if (it == sh->variants.end()) {
-            ShaderInfo* info = new ShaderInfo(translate_shader(sh->tokens, key ? dims : nullptr));
+            ShaderInfo* info = new ShaderInfo(translate_shader(sh->tokens, key ? dims : nullptr, key ? proj : nullptr));
             if (!info->ok) LOGE("pixel shader translation failed: %s", info->error.c_str());
             else info->gl_shader = compile(GL_FRAGMENT_SHADER, info->glsl, d->cache);
             it = sh->variants.emplace(key, info).first;
@@ -810,7 +821,7 @@ void bind_targets(Device* d) {
     if (!d->targets_dirty) return;
     glBindFramebuffer(GL_FRAMEBUFFER, d->fbo);
     Surface* rt = d->rt[0];
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt ? rt->gl_tex : 0, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, rt ? rt->gl_face : GL_TEXTURE_2D, rt ? rt->gl_tex : 0, 0);
     GLuint rb = d->ds ? d->ds->gl_rb : 0;
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
     GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);

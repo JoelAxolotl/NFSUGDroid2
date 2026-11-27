@@ -1,5 +1,3 @@
 ninja: Entering directory `E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\.cxx\RelWithDebInfo\65v4d354\arm64-v8a'
 [0/2] Re-checking globbed directories...
-[1/3] Building CXX object CMakeFiles/nfsug2.dir/hle/com.cpp.o
-[2/3] Building CXX object CMakeFiles/nfsug2.dir/gfx/d3d9_draw.cpp.o
-[3/3] Linking CXX shared library E:\Projecto\AI\Engineering\REA\Projects\Androids\NFSUG2\android\app\build\intermediates\cxx\RelWithDebInfo\65v4d354\obj\arm64-v8a\libnfsug2.so
+ninja: no work to do.

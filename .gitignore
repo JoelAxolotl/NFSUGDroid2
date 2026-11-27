@@ -2,5 +2,15 @@
 .venv
 ./android/.gradle
 android/.gradle
+./android/app/.cxx
+android/app/.cxx
+.cxx
 .gradle
 Tasks
+
+# Derived from the user's own SPEED2.EXE: never commit or publish (see README)
+android/app/src/main/cpp/generated/
+android/app/build/
+android/build/
+*.apk
+analysis/profile/

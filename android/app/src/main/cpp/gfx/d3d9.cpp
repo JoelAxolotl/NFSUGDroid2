@@ -7,7 +7,10 @@
 #include <EGL/egl.h>
 #include <GLES3/gl32.h>
 
+#include <unistd.h>
+
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <cstddef>
 #include <type_traits>
@@ -526,7 +529,7 @@ void readback(Surface* s) {
     GLuint fbo;
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s->gl_tex, 0);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, s->gl_face, s->gl_tex, 0);
     std::vector<uint32_t> px((size_t)s->w * s->h);
     glReadPixels(0, 0, (GLsizei)s->w, (GLsizei)s->h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
     glDeleteFramebuffers(1, &fbo);
@@ -930,6 +933,17 @@ void present_frame(Device* d) {
              (unsigned long long)(g.tex_bytes >> 10), (unsigned long long)g.buf_uploads,
              (unsigned long long)(g.buf_bytes >> 10), (unsigned long long)(g.ring_bytes >> 10),
              (unsigned long long)g.orphans, (unsigned long long)g.readbacks);
+        {
+            // Process memory (resident set) and the guest heap high-water, for settings that
+            // raise texture/geometry detail.
+            long pages_total = 0, pages_rss = 0;
+            if (FILE* f = fopen("/proc/self/statm", "r")) {
+                if (fscanf(f, "%ld %ld", &pages_total, &pages_rss) != 2) pages_rss = 0;
+                fclose(f);
+            }
+            LOGI("  mem: rss %ld MB, guest committed %u MB", pages_rss * (long)sysconf(_SC_PAGESIZE) >> 20,
+                 mem::committed_bytes() >> 20);
+        }
         g_stats = GfxStats{};
         // Instructions the interpreter executed on the render thread (should be
         // near zero once the game runs as statically recompiled native code).
@@ -1034,12 +1048,29 @@ Texture* new_texture(Device* d, uint32_t w, uint32_t h, uint32_t levels, uint32_
     t->iids = cube ? kCubeIIDs : kTextureIIDs;
     t->iid_count = 2;
     com::wrap(t, cube ? cube_vtable() : texture_vtable());
+    const bool cube_rt = cube && (usage & USAGE_RENDERTARGET);
+    if (cube_rt && gfx::make_current()) {
+        // One GL cube map; each face surface renders into its own face (car reflections).
+        glGenTextures(1, &t->gl);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, t->gl);
+        glTexStorage2D(GL_TEXTURE_CUBE_MAP, 1, gl_internal_rt(fmt), (GLsizei)w, (GLsizei)w);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, 0);
+        t->gl_ready = true;
+    }
     for (uint32_t f = 0; f < (cube ? 6u : 1u); ++f) {
         for (uint32_t l = 0; l < levels; ++l) {
             uint32_t lw = std::max(1u, w >> l), lh = std::max(1u, h >> l);
             uint32_t u = l == 0 ? usage : (usage & ~USAGE_RENDERTARGET);
-            if (cube) u &= ~USAGE_RENDERTARGET;
-            t->surfaces.push_back(new_surface(d, lw, lh, fmt, u, pool, t, f, l));
+            if (cube) u &= ~USAGE_RENDERTARGET;  // faces get the shared cube map below
+            Surface* s = new_surface(d, lw, lh, fmt, u, pool, t, f, l);
+            if (cube_rt && l == 0) {
+                s->usage |= USAGE_RENDERTARGET;
+                s->gl_tex = t->gl;
+                s->gl_face = GL_TEXTURE_CUBE_MAP_POSITIVE_X + f;
+                s->gl_shared = true;
+            }
+            s->ref_owner = t;  // D3D9: surfaces share their texture's reference count
+            t->surfaces.push_back(s);
         }
     }
     return t;
@@ -1246,7 +1277,7 @@ void dev_ColorFill(cpu::Cpu& c) {
         GLuint fbo;
         glGenFramebuffers(1, &fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s->gl_tex, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, s->gl_face, s->gl_tex, 0);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glClearColor(((color >> 16) & 0xFF) / 255.f, ((color >> 8) & 0xFF) / 255.f, (color & 0xFF) / 255.f,
                      ((color >> 24) & 0xFF) / 255.f);
@@ -1720,7 +1751,7 @@ void dev_StretchRect(cpu::Cpu& c) {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbos[0]);
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src_tex, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbos[1]);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst->gl_tex, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, dst->gl_face, dst->gl_tex, 0);
     glDisable(GL_SCISSOR_TEST);
     glBlitFramebuffer(sr[0], sr[1], sr[2], sr[3], dr[0], dr[1], dr[2], dr[3], GL_COLOR_BUFFER_BIT,
                       arg(c, 5) == 1 ? GL_NEAREST : GL_LINEAR);

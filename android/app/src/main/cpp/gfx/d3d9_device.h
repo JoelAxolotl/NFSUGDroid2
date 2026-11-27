@@ -28,6 +28,8 @@ struct Surface : Resource {
     uint32_t face = 0, level = 0;
     bool dirty = false;               // guest memory changed since the last GL upload
     GLuint gl_tex = 0, gl_rb = 0;     // render-target texture / depth renderbuffer
+    GLenum gl_face = GL_TEXTURE_2D;   // attachment target: 2D, or a face of the container's cube map
+    bool gl_shared = false;           // gl_tex belongs to the container (cube render target)
     GLuint upload_tex = 0;            // GL copy of a plain (non-RT) surface, for StretchRect
     ~Surface() override;
 };

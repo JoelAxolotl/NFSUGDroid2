@@ -17,6 +17,7 @@
 // are synchronised with cpu::Cpu only where other code can observe them
 // (calls, exits, interpreter fallbacks). The guest memory base is cached in M.
 #define AOT_PROLOGUE                                                                          \
+    cpu::check_suspend(c);                                                                    \
     uint8_t* const M = mem::base;                                                             \
     uint32_t R0 = c.r[0], R1 = c.r[1], R2 = c.r[2], R3 = c.r[3], R4 = c.r[4], R5 = c.r[5],     \
              R6 = c.r[6], R7 = c.r[7];                                                        \
@@ -204,6 +205,26 @@ inline bool fc_incdec(int cc, bool dec, uint32_t a, uint32_t r, int sz) {
         case 14: return zf || sf != of;
         default: return !zf && sf == of;
     }
+}
+
+// SHLD/SHRD r/m32, r32, count (count masked to 5 bits; 0 leaves dst and flags alone).
+// `flags` is false where the recompiler proved the flags dead.
+inline uint32_t shxd32(cpu::Cpu& c, bool left, uint32_t dst, uint32_t src, uint32_t cnt, bool flags) {
+    cnt &= 0x1F;
+    if (!cnt) return dst;
+    uint32_t r, cf;
+    if (left) {
+        r = (dst << cnt) | (src >> (32 - cnt));
+        cf = (dst >> (32 - cnt)) & 1;
+    } else {
+        r = (dst >> cnt) | (src << (32 - cnt));
+        cf = (dst >> (cnt - 1)) & 1;
+    }
+    if (flags) {
+        uint32_t of = ((r ^ dst) >> 31) & 1;  // defined for count 1: sign changed
+        cpu::put_flags(c, cpu::kArithFlags, cpu::szp_flags(r, 4) | (cf ? cpu::CF : 0u) | (of ? cpu::OF : 0u));
+    }
+    return r;
 }
 
 // Two/three-operand IMUL r32 (truncated product; CF = OF = overflow).

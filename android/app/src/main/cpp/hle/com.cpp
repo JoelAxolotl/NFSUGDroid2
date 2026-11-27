@@ -93,11 +93,20 @@ Object* from_guest(uint32_t p) {
     return o && o->guest == p ? o : nullptr;
 }
 
-uint32_t add_ref(Object* o) { return o->refs.fetch_add(1) + 1; }
+uint32_t add_ref(Object* o) {
+    if (o->ref_owner) o = o->ref_owner;
+    return o->refs.fetch_add(1) + 1;
+}
 
 uint32_t release(Object* o) {
+    if (o->ref_owner) o = o->ref_owner;
     uint32_t n = o->refs.fetch_sub(1) - 1;
-    if (n == 0) {
+    if (n == 0) destroy(o);
+    return n;
+}
+
+void destroy(Object* o) {
+    {
         uint32_t g = o->guest;
         uint32_t id = mem::rd32(g + 4);
         if (id && id <= kMaxObjects) {
@@ -109,7 +118,6 @@ uint32_t release(Object* o) {
         mem::wr32(g, 0);
         gheap::free(g);
     }
-    return n;
 }
 
 void QueryInterface(cpu::Cpu& c) {
