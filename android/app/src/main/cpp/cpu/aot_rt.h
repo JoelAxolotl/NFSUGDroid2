@@ -12,6 +12,7 @@
 #include "cpu/x87_ops.h"
 #include "hle/thunks.h"
 #include "runtime/aot.h"
+#include "runtime/game_patches.h"
 
 // Guest registers live in host locals R0..R7 inside a translated function and
 // are synchronised with cpu::Cpu only where other code can observe them

@@ -15524,7 +15524,8 @@ L_005BF5F7:
 void F_005BF610(cpu::Cpu& c) {
   AOT_PROLOGUE;
 L_005BF610:
-  R0 = RD32((uint32_t)(0x870D1Cu));
+  AOT_SYNC_OUT; c.eip = 0x5BF610u; game::patch_racing_resolution(c); if (c.stop != cpu::Stop::None) return;
+  return;  // the patch set EIP and the registers (no sync-out of stale locals)
   {
     uint32_t a = R0 & 0xFFFFFFFFu, b = 0x5u & 0xFFFFFFFFu;
     uint32_t r = cpu::alu(c, 7, a, b, 4); FA = a; FB = b; FR = r;
@@ -32068,9 +32069,11 @@ L_005C7F50:
     uint32_t r = cpu::alu(c, 7, a, b, 4);
   }
   R0 = RD32((uint32_t)(R5 + 0x58u));
-  if (!cpu::x87_exec(c, 0xDB, 0x40, (uint32_t)(R0 + 0x18u))) { AOT_SYNC_OUT; c.eip = 0x5C7F56u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None) return; }
+  AOT_SYNC_OUT; c.eip = 0x5C7F56u; game::patch_projection_aspect(c); if (c.stop != cpu::Stop::None) return;
+  AOT_SYNC_IN; goto L_005C7F64;
   WR32((uint32_t)(R4 + 0x20u), 0x3F800000u);
   if (!cpu::x87_exec(c, 0xDA, 0x70, (uint32_t)(R0 + 0x14u))) { AOT_SYNC_OUT; c.eip = 0x5C7F61u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None) return; }
+L_005C7F64:
   if (!cpu::x87_exec(c, 0xD9, 0x5C, (uint32_t)(R4 + 0x1Cu))) { AOT_SYNC_OUT; c.eip = 0x5C7F64u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None) return; }
   if (cpu::cond(c, 4)) goto L_005C7F79;
 L_005C7F6A:
@@ -32141,7 +32144,9 @@ L_005C7FA8:
   if (!cpu::x87_exec(c, 0xD8, 0x7C, (uint32_t)(R4 + 0x2Cu))) { AOT_SYNC_OUT; c.eip = 0x5C7FD9u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None) return; }
   R2 = RD16((uint32_t)(R7 + 0xC4u));
   WR32((uint32_t)(R4 + 0x2Cu), R2);
-  if (!cpu::x87_exec(c, 0xD8, 0x3D, (uint32_t)(0x784250u))) { AOT_SYNC_OUT; c.eip = 0x5C7FE8u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None) return; }
+  AOT_SYNC_OUT; c.eip = 0x5C7FE8u; game::patch_projection_hscale(c); if (c.stop != cpu::Stop::None) return;
+  AOT_SYNC_IN; goto L_005C7FEE;
+L_005C7FEE:
   if (!cpu::x87_exec(c, 0xD9, 0x5C, (uint32_t)(R4 + 0x1Cu))) { AOT_SYNC_OUT; c.eip = 0x5C7FEEu; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None) return; }
   if (!cpu::x87_exec(c, 0xDB, 0x44, (uint32_t)(R4 + 0x2Cu))) { AOT_SYNC_OUT; c.eip = 0x5C7FF2u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None) return; }
   if (!cpu::x87_exec(c, 0xD8, 0x4C, (uint32_t)(R4 + 0x28u))) { AOT_SYNC_OUT; c.eip = 0x5C7FF6u; cpu::step_one(c); AOT_SYNC_IN; if (c.stop != cpu::Stop::None) return; }

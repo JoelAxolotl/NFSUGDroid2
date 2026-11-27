@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <tuple>
 #include <string>
 #include <unordered_map>
 
@@ -23,6 +24,13 @@
 #include "gfx/gl_context.h"
 #include "gfx/shader_translator.h"
 #include "gfx/texconv.h"
+#include "runtime/process.h"
+
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <cstdarg>
+#include <set>
 
 namespace d3d {
 
@@ -44,8 +52,13 @@ struct Program {
     GLint vc = -1, vi = -1, vb = -1, pc = -1, pi = -1, pb = -1, fix = -1, bgra = -1, alpha = -1, fog = -1,
           fogcolor = -1, bem = -1, beml = -1, rth = -1;
     // FFP
+    GLint squeeze = -1;
     GLint wv = -1, wvp = -1, nrm = -1, tex = -1, viewport = -1, mat = -1, ambient = -1, lpos = -1, ldir = -1,
           ldiff = -1, lspec = -1, lamb = -1, latt = -1, fogv = -1, tfactor = -1, tconst = -1;
+    // Last value uploaded to each uniform location (GL keeps uniforms per program), so
+    // unchanged constants are not re-sent: every glUniform makes the driver rebuild the
+    // program's uniform buffer.
+    mutable std::vector<std::vector<uint8_t>> ucache;
 };
 
 struct VsStage {
@@ -72,10 +85,18 @@ struct DrawCache {
     bool aniso = false;
     std::vector<uint8_t> scratch;
     std::map<std::string, bool> logged;
+    // One validated FBO per (colour texture, cube face, depth renderbuffer): switching render
+    // targets binds a ready framebuffer instead of re-attaching (and revalidating) one.
+    std::map<std::tuple<GLuint, GLenum, GLuint>, GLuint> fbos;
+    // The D3D inputs apply_render_state last turned into GL state (skipped when unchanged).
+    uint32_t rs_inputs[48] = {};
+    bool rs_valid = false;
+    GLuint bound_fbo = 0;  // framebuffer bind_targets last bound (0 = unknown)
 };
 
 // ------------------------------------------------------------------ object cleanup
 Surface::~Surface() {
+    if (dev && (gl_tex || gl_rb)) forget_render_target(dev, gl_shared ? 0 : gl_tex, gl_rb);
     if (mem) gheap::free(mem);
     if (gl_tex && !gl_shared) glDeleteTextures(1, &gl_tex);
     if (gl_rb) glDeleteRenderbuffers(1, &gl_rb);
@@ -85,6 +106,7 @@ Texture::~Texture() {
     // A 2D render target's GL texture belongs to its level-0 surface; a cube render
     // target's cube map belongs to the texture (its faces only attach to it).
     bool surface_owned = (usage & USAGE_RENDERTARGET) && !cube;
+    if (cube && gl && dev) forget_render_target(dev, gl, 0);
     for (Surface* s : surfaces) com::destroy(s);
     if (gl && !surface_owned) glDeleteTextures(1, &gl);
 }
@@ -401,7 +423,7 @@ Program* program_for(Device* d, const VsStage& v, const PsStage& p) {
     pr.fix = loc("u_fix"); pr.bgra = loc("u_bgra"); pr.alpha = loc("u_alpha"); pr.fog = loc("u_fog");
     pr.fogcolor = loc("u_fogcolor"); pr.bem = loc("u_bem"); pr.beml = loc("u_beml"); pr.rth = loc("u_rth");
     pr.wv = loc("u_wv"); pr.wvp = loc("u_wvp"); pr.nrm = loc("u_nrm"); pr.tex = loc("u_tex");
-    pr.viewport = loc("u_viewport"); pr.mat = loc("u_mat"); pr.ambient = loc("u_ambient");
+    pr.viewport = loc("u_viewport"); pr.squeeze = loc("u_squeeze"); pr.mat = loc("u_mat"); pr.ambient = loc("u_ambient");
     pr.lpos = loc("u_lpos"); pr.ldir = loc("u_ldir"); pr.ldiff = loc("u_ldiff"); pr.lspec = loc("u_lspec");
     pr.lamb = loc("u_lamb"); pr.latt = loc("u_latt"); pr.fogv = loc("u_fogv");
     pr.tfactor = loc("u_tfactor"); pr.tconst = loc("u_tconst");
@@ -477,6 +499,21 @@ void bind_textures(Device* d, const State& s, const Program* pr, const VsStage&,
 // ---------------------------------------------------------------- render state
 void apply_render_state(Device* d, const State& s) {
     const uint32_t* rs = s.rs;
+    {
+        // Everything below derives only from these inputs; consecutive draws usually share them.
+        static const uint16_t kUsed[] = {174, 7, 23, 14, 22, 27, 19, 20, 171, 206, 207, 208, 209, 193, 168,
+                                         52, 53, 54, 55, 56, 57, 58, 59, 185, 186, 187, 188, 189, 195, 175};
+        uint32_t in[48] = {};
+        size_t n = 0;
+        for (uint16_t r : kUsed) in[n++] = rs[r];
+        for (int i = 0; i < 6; ++i) in[n++] = s.viewport[i];
+        for (int i = 0; i < 4; ++i) in[n++] = s.scissor[i];
+        in[n++] = d->ds ? 1u : 0u;
+        DrawCache* dc = d->cache;
+        if (dc->rs_valid && memcmp(in, dc->rs_inputs, sizeof in) == 0) return;
+        memcpy(dc->rs_inputs, in, sizeof in);
+        dc->rs_valid = true;
+    }
     // Viewport (D3D coordinates map directly; see header comment).
     float minz, maxz;
     memcpy(&minz, &s.viewport[4], 4);
@@ -551,19 +588,58 @@ void apply_render_state(Device* d, const State& s) {
     }
 }
 
-void set_uniforms(Device* d, const State& s, const Program* pr, uint32_t bgra) {
+// ---- cached uniform uploads (see Program::ucache)
+bool fresh(const Program* pr, GLint loc, const void* data, size_t bytes) {
+    if (loc < 0) return false;
+    if ((size_t)loc >= pr->ucache.size()) {
+        if (loc > 4096) return true;  // unexpected location: no caching
+        pr->ucache.resize((size_t)loc + 1);
+    }
+    std::vector<uint8_t>& c = pr->ucache[(size_t)loc];
+    if (c.size() == bytes && memcmp(c.data(), data, bytes) == 0) return false;
+    c.assign((const uint8_t*)data, (const uint8_t*)data + bytes);
+    return true;
+}
+void u4f(const Program* pr, GLint loc, float a, float b, float c, float d) {
+    const float v[4] = {a, b, c, d};
+    if (fresh(pr, loc, v, sizeof v)) glUniform4fv(loc, 1, v);
+}
+void u4fv(const Program* pr, GLint loc, GLsizei n, const float* v) {
+    if (fresh(pr, loc, v, (size_t)n * 16)) glUniform4fv(loc, n, v);
+}
+void u4iv(const Program* pr, GLint loc, GLsizei n, const GLint* v) {
+    if (fresh(pr, loc, v, (size_t)n * 16)) glUniform4iv(loc, n, v);
+}
+void u1iv(const Program* pr, GLint loc, GLsizei n, const GLint* v) {
+    if (fresh(pr, loc, v, (size_t)n * 4)) glUniform1iv(loc, n, v);
+}
+void u1i(const Program* pr, GLint loc, GLint v) {
+    if (fresh(pr, loc, &v, 4)) glUniform1i(loc, v);
+}
+void u1f(const Program* pr, GLint loc, float v) {
+    if (fresh(pr, loc, &v, 4)) glUniform1f(loc, v);
+}
+void um4(const Program* pr, GLint loc, GLsizei n, const float* v) {
+    if (fresh(pr, loc, v, (size_t)n * 64)) glUniformMatrix4fv(loc, n, GL_FALSE, v);
+}
+void um3(const Program* pr, GLint loc, GLsizei n, const float* v) {
+    if (fresh(pr, loc, v, (size_t)n * 36)) glUniformMatrix3fv(loc, n, GL_FALSE, v);
+}
+
+void set_uniforms(Device* d, const State& s, const Program* pr, uint32_t bgra, float squeeze) {
+    u1f(pr, pr->squeeze, squeeze);
     const uint32_t* rs = s.rs;
     float vw = (float)std::max<uint32_t>(s.viewport[2], 1), vh = (float)std::max<uint32_t>(s.viewport[3], 1);
-    if (pr->fix >= 0) glUniform4f(pr->fix, -1.f / vw, 1.f / vh, 0.f, 0.f);
-    if (pr->bgra >= 0) glUniform1i(pr->bgra, (GLint)bgra);
-    if (pr->vc >= 0 && pr->vs_consts) glUniform4fv(pr->vc, (GLsizei)pr->vs_consts, &s.vs_f[0][0]);
-    if (pr->vi >= 0) glUniform4iv(pr->vi, 16, &s.vs_i[0][0]);
-    if (pr->vb >= 0) glUniform1iv(pr->vb, 16, (const GLint*)s.vs_b);
-    if (pr->pc >= 0 && pr->ps_consts) glUniform4fv(pr->pc, (GLsizei)pr->ps_consts, &s.ps_f[0][0]);
-    if (pr->pi >= 0) glUniform4iv(pr->pi, 16, &s.ps_i[0][0]);
-    if (pr->pb >= 0) glUniform1iv(pr->pb, 16, (const GLint*)s.ps_b);
-    if (pr->rth >= 0) glUniform1f(pr->rth, d->rt[0] ? (float)d->rt[0]->h : 0.f);
-    if (pr->alpha >= 0) glUniform4f(pr->alpha, rs[15] ? (float)rs[25] : 0.f, (float)(rs[24] & 255) / 255.f, 0.f, 0.f);
+    if (pr->fix >= 0) u4f(pr, pr->fix, -1.f / vw, 1.f / vh, 0.f, 0.f);
+    if (pr->bgra >= 0) u1i(pr, pr->bgra, (GLint)bgra);
+    if (pr->vc >= 0 && pr->vs_consts) u4fv(pr, pr->vc, (GLsizei)pr->vs_consts, &s.vs_f[0][0]);
+    if (pr->vi >= 0) u4iv(pr, pr->vi, 16, &s.vs_i[0][0]);
+    if (pr->vb >= 0) u1iv(pr, pr->vb, 16, (const GLint*)s.vs_b);
+    if (pr->pc >= 0 && pr->ps_consts) u4fv(pr, pr->pc, (GLsizei)pr->ps_consts, &s.ps_f[0][0]);
+    if (pr->pi >= 0) u4iv(pr, pr->pi, 16, &s.ps_i[0][0]);
+    if (pr->pb >= 0) u1iv(pr, pr->pb, 16, (const GLint*)s.ps_b);
+    if (pr->rth >= 0) u1f(pr, pr->rth, d->rt[0] ? (float)d->rt[0]->h : 0.f);
+    if (pr->alpha >= 0) u4f(pr, pr->alpha, rs[15] ? (float)rs[25] : 0.f, (float)(rs[24] & 255) / 255.f, 0.f, 0.f);
     if (pr->fog >= 0) {
         float mode = 0;
         if (rs[28]) {
@@ -572,10 +648,10 @@ void set_uniforms(Device* d, const State& s, const Program* pr, uint32_t bgra) {
             else if (rs[35] == 2) mode = 4;
             else mode = 1;
         }
-        glUniform4f(pr->fog, mode, rsf(s, 36), rsf(s, 37), rsf(s, 38));
+        u4f(pr, pr->fog, mode, rsf(s, 36), rsf(s, 37), rsf(s, 38));
         float fc[4];
         argb_to_vec4(rs[34], fc);
-        glUniform4fv(pr->fogcolor, 1, fc);
+        u4fv(pr, pr->fogcolor, 1, fc);
     }
     if (pr->bem >= 0 || pr->beml >= 0) {
         float bem[8][4], beml[8][4];
@@ -585,45 +661,45 @@ void set_uniforms(Device* d, const State& s, const Program* pr, uint32_t bgra) {
             memcpy(&beml[i][1], &s.tss[i][23], 4);
             beml[i][2] = beml[i][3] = 0;
         }
-        if (pr->bem >= 0) glUniform4fv(pr->bem, 8, &bem[0][0]);
-        if (pr->beml >= 0) glUniform4fv(pr->beml, 8, &beml[0][0]);
+        if (pr->bem >= 0) u4fv(pr, pr->bem, 8, &bem[0][0]);
+        if (pr->beml >= 0) u4fv(pr, pr->beml, 8, &beml[0][0]);
     }
     if (pr->tfactor >= 0) {
         float tf[4];
         argb_to_vec4(rs[60], tf);
-        glUniform4fv(pr->tfactor, 1, tf);
+        u4fv(pr, pr->tfactor, 1, tf);
     }
     if (pr->tconst >= 0) {
         float tc[8][4];
         for (int i = 0; i < 8; ++i) argb_to_vec4(s.tss[i][32], tc[i]);
-        glUniform4fv(pr->tconst, 8, &tc[0][0]);
+        u4fv(pr, pr->tconst, 8, &tc[0][0]);
     }
     if (!pr->ffp_vs) return;
-    if (pr->viewport >= 0) glUniform4f(pr->viewport, (float)s.viewport[0], (float)s.viewport[1], vw, vh);
+    if (pr->viewport >= 0) u4f(pr, pr->viewport, (float)s.viewport[0], (float)s.viewport[1], vw, vh);
     const float* world = s.transforms[24];
     const float* view = s.transforms[2];
     const float* proj = s.transforms[3];
     float wv[16], wvp[16];
     mat_mul(world, view, wv);
     mat_mul(wv, proj, wvp);
-    if (pr->wv >= 0) glUniformMatrix4fv(pr->wv, 1, GL_FALSE, wv);
-    if (pr->wvp >= 0) glUniformMatrix4fv(pr->wvp, 1, GL_FALSE, wvp);
+    if (pr->wv >= 0) um4(pr, pr->wv, 1, wv);
+    if (pr->wvp >= 0) um4(pr, pr->wvp, 1, wvp);
     if (pr->nrm >= 0) {
         float n3[9] = {wv[0], wv[1], wv[2], wv[4], wv[5], wv[6], wv[8], wv[9], wv[10]};
-        glUniformMatrix3fv(pr->nrm, 1, GL_FALSE, n3);
+        um3(pr, pr->nrm, 1, n3);
     }
-    if (pr->tex >= 0) glUniformMatrix4fv(pr->tex, 8, GL_FALSE, s.transforms[16]);
+    if (pr->tex >= 0) um4(pr, pr->tex, 8, s.transforms[16]);
     if (pr->mat >= 0) {
         float m[5][4];
         memcpy(m, s.material, 16 * 4);
         m[4][0] = s.material[16];
         m[4][1] = m[4][2] = m[4][3] = 0;
-        glUniform4fv(pr->mat, 5, &m[0][0]);
+        u4fv(pr, pr->mat, 5, &m[0][0]);
     }
     if (pr->ambient >= 0) {
         float a[4];
         argb_to_vec4(rs[139], a);
-        glUniform4fv(pr->ambient, 1, a);
+        u4fv(pr, pr->ambient, 1, a);
     }
     if (pr->lpos >= 0 || pr->ldir >= 0) {
         float lpos[8][4] = {}, ldir[8][4] = {}, ldiff[8][4] = {}, lspec[8][4] = {}, lamb[8][4] = {}, latt[8][4] = {};
@@ -649,14 +725,14 @@ void set_uniforms(Device* d, const State& s, const Program* pr, uint32_t bgra) {
             latt[n][3] = L[23];
             ++n;
         }
-        glUniform4fv(pr->lpos, 8, &lpos[0][0]);
-        glUniform4fv(pr->ldir, 8, &ldir[0][0]);
-        glUniform4fv(pr->ldiff, 8, &ldiff[0][0]);
-        glUniform4fv(pr->lspec, 8, &lspec[0][0]);
-        glUniform4fv(pr->lamb, 8, &lamb[0][0]);
-        glUniform4fv(pr->latt, 8, &latt[0][0]);
+        u4fv(pr, pr->lpos, 8, &lpos[0][0]);
+        u4fv(pr, pr->ldir, 8, &ldir[0][0]);
+        u4fv(pr, pr->ldiff, 8, &ldiff[0][0]);
+        u4fv(pr, pr->lspec, 8, &lspec[0][0]);
+        u4fv(pr, pr->lamb, 8, &lamb[0][0]);
+        u4fv(pr, pr->latt, 8, &latt[0][0]);
     }
-    if (pr->fogv >= 0) glUniform4f(pr->fogv, rsf(s, 36), rsf(s, 37), rsf(s, 38), 0.f);
+    if (pr->fogv >= 0) u4f(pr, pr->fogv, rsf(s, 36), rsf(s, 37), rsf(s, 38), 0.f);
 }
 
 // ---------------------------------------------------------------- vertex input
@@ -819,14 +895,50 @@ void draw_init(Device* d) {
 
 void bind_targets(Device* d) {
     if (!d->targets_dirty) return;
-    glBindFramebuffer(GL_FRAMEBUFFER, d->fbo);
     Surface* rt = d->rt[0];
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, rt ? rt->gl_face : GL_TEXTURE_2D, rt ? rt->gl_tex : 0, 0);
+    GLuint tex = rt ? rt->gl_tex : 0;
+    GLenum face = rt ? rt->gl_face : GL_TEXTURE_2D;
     GLuint rb = d->ds ? d->ds->gl_rb : 0;
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
-    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (st != GL_FRAMEBUFFER_COMPLETE) LOGW("render target FBO incomplete: %x", st);
+    auto key = std::make_tuple(tex, face, rb);
+    auto& fbos = d->cache->fbos;
+    auto it = fbos.find(key);
+    if (it == fbos.end()) {
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, face, tex, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
+        GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (st != GL_FRAMEBUFFER_COMPLETE) LOGW("render target FBO incomplete: %x", st);
+        it = fbos.emplace(key, fbo).first;
+    } else if (d->cache->bound_fbo != it->second) {
+        // Re-binding the bound FBO is not free on tilers; only switch when it differs.
+        glBindFramebuffer(GL_FRAMEBUFFER, it->second);
+    }
+    d->cache->bound_fbo = it->second;
     d->targets_dirty = false;
+}
+
+void invalidate_gl_state(Device* d) {
+    if (!d->cache) return;
+    d->cache->rs_valid = false;
+    d->cache->bound_fbo = 0;  // callers may also have bound other framebuffers
+    d->targets_dirty = true;
+}
+
+void forget_render_target(Device* d, GLuint tex, GLuint rb) {
+    if (!d->cache) return;
+    auto& fbos = d->cache->fbos;
+    for (auto it = fbos.begin(); it != fbos.end();) {
+        if ((tex && std::get<0>(it->first) == tex) || (rb && std::get<2>(it->first) == rb)) {
+            if (d->cache->bound_fbo == it->second) d->cache->bound_fbo = 0;
+            glDeleteFramebuffers(1, &it->second);
+            it = fbos.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    d->targets_dirty = true;
 }
 
 void upload_texture(Texture* t) {
@@ -907,6 +1019,186 @@ GLuint surface_gl_texture(Surface* s) {
     return s->upload_tex;
 }
 
+namespace {
+FILE* g_capture = nullptr;
+std::set<std::pair<GLuint, GLenum>> g_capture_rts;  // render targets sampled during the capture
+std::set<uint32_t> g_capture_dump_after;              // draw numbers whose render target is saved after the draw
+
+// Writes a render target's colour (as GL stores it: top-down) to <user>/rt_*.ppm.
+void dump_render_target(GLuint tex, GLenum face, uint32_t w, uint32_t h) {
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, face, tex, 0);
+    std::vector<uint8_t> px((size_t)w * h * 4);
+    glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    char name[96];
+    snprintf(name, sizeof name, "rt_%u_%x_%ux%u.ppm", tex, face, w, h);
+    if (FILE* f = fopen((proc::config().user_dir + "/" + name).c_str(), "wb")) {
+        fprintf(f, "P6 %u %u 255\n", w, h);
+        for (size_t i = 0; i < (size_t)w * h; ++i) fwrite(&px[i * 4], 1, 3, f);
+        fclose(f);
+    }
+}
+uint32_t g_capture_draw = 0;
+uint32_t g_capture_poll = 0;
+
+std::string user_path(const char* name) { return proc::config().user_dir + "/" + name; }
+
+void capture_shader(const char* kind, const void* id, const std::string& glsl) {
+    static std::set<std::string> written;
+    char name[96];
+    snprintf(name, sizeof name, "shaders/%s_%p.glsl", kind, id);
+    if (!written.insert(name).second) return;
+    mkdir(user_path("shaders").c_str(), 0755);
+    if (FILE* f = fopen(user_path(name).c_str(), "w")) {
+        fputs(glsl.c_str(), f);
+        fclose(f);
+    }
+}
+
+void capture_draw(Device* d, const State& s, uint32_t prim, uint32_t count, const VsStage& v, const PsStage& p) {
+    FILE* f = g_capture;
+    Surface* rt = d->rt[0];
+    fprintf(f, "#%u prim %u n %u rt %ux%u%s%s ds %s", g_capture_draw++, prim, count, rt ? rt->w : 0, rt ? rt->h : 0,
+            rt == d->backbuffer ? " bb" : "", rt && rt->gl_face != GL_TEXTURE_2D ? " cubeface" : "",
+            d->ds ? "yes" : "no");
+    fprintf(f, " rtgl %u", rt ? rt->gl_tex : 0);
+    if (v.info) {
+        fprintf(f, " vs %p(%u.%u)", (const void*)v.info, v.info->major, v.info->minor);
+        capture_shader("vs", v.info, v.info->glsl);
+    } else {
+        fprintf(f, " vs ffp");
+    }
+    if (p.info) {
+        fprintf(f, " ps %p(%u.%u)", (const void*)p.info, p.info->major, p.info->minor);
+        capture_shader("ps", p.info, p.info->glsl);
+    } else {
+        std::string g = ffp_pixel_glsl(p.ffp);
+        fprintf(f, " ps ffp#%08zx", std::hash<std::string>()(g) & 0xFFFFFFFF);
+        char id[32];
+        snprintf(id, sizeof id, "%08zx", std::hash<std::string>()(g) & 0xFFFFFFFF);
+        capture_shader("ffpps", (const void*)(uintptr_t)strtoul(id, nullptr, 16), g);
+    }
+    const uint32_t* rs = s.rs;
+    fprintf(f, " | blend %u %u>%u op %u bf %08x sepa %u %u>%u op %u atest %u ref %u z %u/%u f%u cull %u fog %u cw %x srgb %u",
+            rs[27], rs[19], rs[20], rs[171], rs[193], rs[206], rs[207], rs[208], rs[209], rs[15], rs[24], rs[7], rs[14],
+            rs[23], rs[22], rs[28], rs[168], rs[194]);
+    for (int i = 0; i < 8; ++i) {
+        Texture* t = bound_texture(s, i);
+        if (!t) continue;
+        const uint32_t* ts = s.tss[i];
+        if (t->usage & USAGE_RENDERTARGET) {
+            if (t->cube) {
+                for (GLenum fc = 0; fc < 6; ++fc) g_capture_rts.insert({t->gl, GL_TEXTURE_CUBE_MAP_POSITIVE_X + fc});
+            } else {
+                g_capture_rts.insert({t->gl, GL_TEXTURE_2D});
+            }
+        }
+        fprintf(f, "\n    s%d fmt %x %ux%u lv %u%s%s tci %x ttf %x cop %u(%x,%x) aop %u", i, t->format, t->w, t->h,
+                t->levels, t->cube ? " cube" : "", (t->usage & USAGE_RENDERTARGET) ? " RT" : "", ts[11], ts[24], ts[1],
+                ts[2], ts[3], ts[4]);
+        fprintf(f, " gl %u", t->gl);
+        const uint32_t* ss = s.ss[i];
+        fprintf(f, " addr %u/%u filt %u/%u/%u", ss[1], ss[2], ss[5], ss[6], ss[7]);
+    }
+    if (p.info) {
+        fprintf(f, "\n    pc");
+        for (int i = 0; i < 4; ++i)
+            fprintf(f, " [%g %g %g %g]", s.ps_f[i][0], s.ps_f[i][1], s.ps_f[i][2], s.ps_f[i][3]);
+    }
+    fputc('\n', f);
+}
+}  // namespace
+
+bool capturing() { return g_capture != nullptr; }
+
+void capture_note(const char* fmt, ...) {
+    if (!g_capture) return;
+    va_list ap;
+    va_start(ap, fmt);
+    fputs("  . ", g_capture);
+    vfprintf(g_capture, fmt, ap);
+    fputc('\n', g_capture);
+    va_end(ap);
+}
+
+void capture_frame_boundary(Device* d) {
+    if (g_capture) {
+        for (auto [tex, face] : g_capture_rts) {
+            GLint w = 0, h = 0;
+            glBindTexture(face == GL_TEXTURE_2D ? GL_TEXTURE_2D : GL_TEXTURE_CUBE_MAP, tex);
+            glGetTexLevelParameteriv(face, 0, GL_TEXTURE_WIDTH, &w);
+            glGetTexLevelParameteriv(face, 0, GL_TEXTURE_HEIGHT, &h);
+            if (w > 0 && h > 0) dump_render_target(tex, face, (uint32_t)w, (uint32_t)h);
+        }
+        g_capture_rts.clear();
+        d->targets_dirty = true;
+        fclose(g_capture);
+        g_capture = nullptr;
+        LOGI("capture: frame written to capture.txt");
+    }
+    if (++g_capture_poll % 30) return;
+    std::string trigger = user_path("capture");
+    if (access(trigger.c_str(), F_OK) != 0) return;
+    g_capture_dump_after.clear();
+    if (FILE* tf = fopen(trigger.c_str(), "r")) {  // optional: draw numbers to snapshot
+        unsigned n;
+        while (fscanf(tf, "%u", &n) == 1) g_capture_dump_after.insert(n);
+        fclose(tf);
+    }
+    unlink(trigger.c_str());
+    g_capture = fopen(user_path("capture.txt").c_str(), "w");
+    g_capture_draw = 0;
+    LOGI("capture: recording the next frame");
+}
+
+// Widescreen: the game lays out its menus and HUD for 4:3 (640x480 scaled to the back buffer),
+// so on a wider back buffer they would be stretched. Screen-space (pretransformed) draws to the
+// back buffer are squeezed into a centred 4:3 area, except ones spanning the whole width
+// (fades, full-screen overlays), which keep covering the screen. Returns the x scale.
+float hud_squeeze(Device* d, const State& s, const std::vector<VertexElement>& decl, const VsStage& v,
+                  uint32_t start_vertex, uint32_t count, bool indexed, int32_t base_vertex, uint32_t up_vertices,
+                  uint32_t up_stride, uint32_t up_vertex_count) {
+    Surface* bb = d->backbuffer;
+    if (v.info || !v.ffp.pretransformed || !bb || d->rt[0] != bb) return 1.0f;
+    if ((uint64_t)bb->w * 3 <= (uint64_t)bb->h * 4 + bb->w / 64) return 1.0f;  // not wider than 4:3
+    const float squeeze = (4.0f * (float)bb->h) / (3.0f * (float)bb->w);
+    const VertexElement* pos = nullptr;
+    for (const VertexElement& e : decl)
+        if (e.usage == 9 && e.usage_index == 0) pos = &e;  // POSITIONT
+    if (!pos) return squeeze;
+    uint32_t base, stride, first, n;
+    if (up_vertices) {
+        base = up_vertices + pos->offset;
+        stride = up_stride;
+        first = 0;
+        n = indexed ? up_vertex_count : count;
+    } else {
+        const Stream& st = s.streams[pos->stream & 15];
+        auto* vb = static_cast<Buffer*>(com::from_guest(st.vb));
+        if (!vb || !vb->mem) return squeeze;
+        base = vb->mem + st.offset + pos->offset;
+        stride = st.stride;
+        first = indexed ? (uint32_t)(base_vertex + (int32_t)d->dip_min) : start_vertex;
+        n = indexed ? d->dip_num : count;
+        if ((uint64_t)(first + n) * stride > vb->size) return squeeze;
+    }
+    if (!stride || n == 0) return squeeze;
+    n = std::min<uint32_t>(n, 4096);
+    float lo = 1e30f, hi = -1e30f;
+    for (uint32_t i = 0; i < n; ++i) {
+        float x;
+        memcpy(&x, mem::ptr(base + (first + i) * stride), 4);
+        lo = std::min(lo, x);
+        hi = std::max(hi, x);
+    }
+    const float w = (float)bb->w;
+    return (lo <= w * 0.01f && hi >= w * 0.99f) ? 1.0f : squeeze;
+}
+
 void draw(Device* d, uint32_t prim, uint32_t start_vertex, uint32_t prim_count, bool indexed, int32_t base_vertex,
           uint32_t start_index, uint32_t up_vertices, uint32_t up_stride, uint32_t up_indices, uint32_t up_index_fmt,
           uint32_t up_vertex_count) {
@@ -927,6 +1219,27 @@ void draw(Device* d, uint32_t prim, uint32_t start_vertex, uint32_t prim_count, 
     const std::vector<VertexElement>& decl = decl_for(d, s);
     VsStage v = vs_stage(d, s, decl);
     PsStage p = ps_stage(d, s);
+    // After a listed draw, save its render target (capture mode only).
+    struct DumpAfter {
+        Surface* rt = nullptr;
+        uint32_t n = 0;
+        ~DumpAfter() {
+            if (!rt) return;
+            dump_render_target(rt->gl_tex, rt->gl_face, rt->w, rt->h);
+            char from[96], to[96];
+            snprintf(from, sizeof from, "rt_%u_%x_%ux%u.ppm", rt->gl_tex, rt->gl_face, rt->w, rt->h);
+            snprintf(to, sizeof to, "after_%04u_%ux%u.ppm", n, rt->w, rt->h);
+            rename(user_path(from).c_str(), user_path(to).c_str());
+        }
+    } dump_after;
+    if (__builtin_expect(g_capture != nullptr, 0)) {
+        uint32_t n = g_capture_draw;
+        capture_draw(d, s, prim, vertex_count(prim, prim_count), v, p);
+        if (g_capture_dump_after.count(n) && d->rt[0] && d->rt[0]->gl_tex) {
+            dump_after.rt = d->rt[0];
+            dump_after.n = n;
+        }
+    }
     if (!v.shader || !p.shader) return;
     Program* pr = program_for(d, v, p);
     if (!pr) return;
@@ -941,7 +1254,8 @@ void draw(Device* d, uint32_t prim, uint32_t start_vertex, uint32_t prim_count, 
     }
     uint32_t bgra = 0;
     setup_vertices(d, s, decl, v, up_base, up_stride, &bgra);
-    set_uniforms(d, s, pr, bgra);
+    set_uniforms(d, s, pr, bgra, hud_squeeze(d, s, decl, v, start_vertex, count, indexed, base_vertex, up_vertices,
+                                             up_stride, up_vertex_count));
     bind_textures(d, s, pr, v, p);
     apply_render_state(d, s);
 

@@ -33,6 +33,9 @@ bool native_enabled();
 // Registers a generated table (called from generated code at load time).
 void register_table(const Entry* entries, uint32_t count);
 
+// Routes execution reaching `guest` to a host replacement (runtime/game_patches.cpp).
+void register_patch(uint32_t guest, Fn fn);
+
 namespace detail {
 extern Fn* g_table;
 extern uint8_t* g_seen;

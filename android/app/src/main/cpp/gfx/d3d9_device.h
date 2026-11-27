@@ -172,6 +172,7 @@ struct Device : com::Object {
     bool in_scene = false;
 
     DrawCache* cache = nullptr;
+    uint32_t dip_min = 0, dip_num = 0;  // MinVertexIndex / NumVertices of the current DrawIndexedPrimitive
     uint64_t frames = 0, draws = 0, frame_draws = 0;
     uint64_t stat_t0 = 0, stat_frames = 0;
 
@@ -194,6 +195,17 @@ void draw(Device* d, uint32_t prim, uint32_t start_vertex, uint32_t prim_count, 
           uint32_t up_indices, uint32_t up_index_fmt, uint32_t up_vertex_count);
 void upload_texture(Texture* t);
 GLuint surface_gl_texture(Surface* s);  // render target texture, or an uploaded copy
+// Drops cached framebuffers that attach `tex` or `rb` (before those GL objects are deleted).
+void forget_render_target(Device* d, GLuint tex, GLuint rb);
+// Call after changing GL raster state outside the draw path (Clear, blits, present).
+void invalidate_gl_state(Device* d);
+
+// One-frame draw capture for rendering diagnostics: creating `<user>/capture` makes the
+// next frame log every draw (shaders, textures, targets, key states) to
+// `<user>/capture.txt` and the GLSL of each program to `<user>/shaders/`.
+void capture_frame_boundary(Device* d);
+bool capturing();
+void capture_note(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 std::vector<VertexElement> fvf_to_decl(uint32_t fvf);
 

@@ -95,6 +95,32 @@ bindings (read from the DirectInput action maps the game registers):
 The overlay hides itself while a physical controller is in use (toggle on the launcher screen).
 Physical keyboards are passed through as-is.
 
+### Widescreen (16:9)
+
+The game runs at 16:9. The **Resolution** option's six entries are replaced with 16:9 sizes. The
+menu still shows the old 4:3 names for these entries:
+
+| Option shows | Renders at |
+|---|---|
+| 640x480 | 854x480 |
+| 800x600 (default) | 960x540 |
+| 1024x768 | 1280x720 |
+| 1280x960 | 1600x900 |
+| 1280x1024 | 1920x1080 |
+| 1600x1200 | 2560x1440 |
+
+- **3D view:** Hor+. It keeps the original 4:3 vertical view and shows more at the sides, instead of
+  the stock game's Vert- crop.
+- **Menus and HUD:** these are laid out for 4:3, so they are kept in a centred 4:3 area instead of
+  being stretched. Full-screen fades and overlays still cover the whole screen.
+- **Phone screen:** the 16:9 frame is fitted to the phone's screen with thin side bars.
+
+How it works: `runtime/game_patches.def` lists host replacements for three pieces of game code
+(`GetRacingResolution` at `0x5BF610`, and two instructions of the view projection at
+`0x5C7F56`/`0x5C7FE8`). The recompiler emits calls to them, and refuses to run if the original
+bytes differ. The runtime registers them for the interpreter as well. They are applied only when
+the executable's identity check passes.
+
 ### Files on the phone
 
 | Path (under `/sdcard/Android/data/com.rea.nfsug2/files/`) | Contents |
@@ -180,7 +206,9 @@ presented N frames, FPS ...
 | Inline x87 core | removed 31% of the main thread; 21 → ~55 FPS |
 | Flag liveness and branch fusion | removed lazy-flag materialisation (6.7%) |
 | Mapped, unsynchronised vertex ring | removed 1.6 ms stalls per `*UP` draw |
-| Lock-free COM lookup, sampled stats timing | ~9% mutex/clock overhead (to be re-measured) |
+| Lock-free COM lookup, sampled stats timing | removed ~9% mutex/clock overhead |
+| Per-attachment FBO cache, no redundant FBO binds | removed per-switch re-attach and revalidation (~5%) |
+| Per-program uniform shadow, render-state shadow | draw cost ~14 → ~6 µs; max-settings free-roam 22 → 33–52 FPS |
 
 ### Profiling on the device
 
@@ -191,7 +219,12 @@ python $NDK/simpleperf/binary_cache_builder.py -i perf.data -lib android/app/bui
 $NDK/simpleperf/bin/windows/x86_64/simpleperf.exe report -i perf.data --symfs binary_cache --sort comm,symbol
 ```
 
-Add `--call-graph dwarf,8192` (short durations) to see callers. Generated functions appear as
+Add `--call-graph dwarf,8192` (short durations) to see callers.
+
+**Frame capture:** `adb shell touch /sdcard/Android/data/com.rea.nfsug2/files/user/capture` makes the
+next frame write `user/capture.txt` (every draw: render target, shaders, bound textures with format /
+size / texture-transform flags, key render states, plus `SetTexture` and state-block events),
+`user/shaders/*.glsl` (translated shaders) and `user/rt_*.ppm` (each sampled render target). Generated functions appear as
 `F_<guest address>`.
 
 ## Development
@@ -226,17 +259,35 @@ Other tools:
 
 ## Status and roadmap
 
-Working: boot to gameplay, career and free-roam, saves, menus, rendering, audio, touch and
-controller input, static recompilation with identity check.
+Working: boot to gameplay, career, free-roam and races, saves, menus, rendering (including max
+settings: car reflections, road reflections, light glow, motion blur), audio, touch and controller
+input, static recompilation with identity check.
+
+Fixed for max graphics settings (2026-11-27):
+
+- **Crash ("Memory fault @00000048") when enabling car reflections / changing resolution.** In
+  D3D9, a texture's surfaces share the texture's reference count. The game releases the cube texture
+  right after `GetCubeMapSurface`, which destroyed it in the old model. Surfaces now forward
+  AddRef/Release to their texture, and render-target cube maps are real GL cube maps with
+  per-face framebuffers.
+- **Blue "sheet" road / streaky car reflections.** ps 1.1–1.3 `tex` ignored `D3DTTFF_PROJECTED`
+  (projected light maps and the planar road reflection were sampled unprojected), and
+  `texm3x2*/texm3x3*/texdp3/texreg2*/texbem` dropped source modifiers such as `_bx2`. Both are fixed
+  (projection is part of the ps 1.x shader-variant key).
+- **Audio-library race.** The game serialises its non-reentrant audio library by suspending the
+  audio thread (`SuspendThread` from `0x5BE1E0`), which the runtime ignored (fault at `0073927D`).
+  `SuspendThread` now stops the target at its next safe point (guest function entry, interpreter
+  step, or return from host code).
+- **`shld`/`shrd` are native**, which removes the interpreted `_allshr` hot spot (millions of
+  instructions per second in some scenes).
+
+Memory at max settings: ~450–800 MB resident, guest heap ~185 MB (logged every 5 s as `mem:`).
 
 Open:
 
-- **Max graphics settings** ended in a "Memory fault" (guest crash) after applying. The suspected
-  cause is fixed but not yet verified on the device. The game serialises its non-reentrant audio
-  library by suspending the audio thread (`SuspendThread`, called from `0x5BE1E0`). The runtime
-  ignored that call, so both threads raced on the library's context pointer (`0x8B7BB0`, fault at
-  `0073927D`). `SuspendThread` now stops the target at its next safe point (guest function entry,
-  interpreter step, or return from host code). Texture memory at max detail still needs measuring.
+- **Max settings performance:** free-roam 33–52 FPS and races ~28–40 FPS (up to ~1,750 draws per
+  frame). The game thread is CPU-bound by its own code plus GL submission. The next step would be a
+  separate GL submission thread (record D3D calls, replay on a render thread).
 - **Audio decoder thread** still interprets its MMX code. It runs on its own core, but
   native MMX emission would cut its CPU use.
 - **GPU driver overhead** (~17% at ~800 draws/frame) could be cut by caching GL state.

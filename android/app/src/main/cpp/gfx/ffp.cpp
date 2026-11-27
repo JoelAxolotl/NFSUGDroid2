@@ -14,7 +14,7 @@ std::string ffp_vertex_glsl(const FfpVsKey& k) {
          "layout(location = 2) in vec4 a_color0;\nlayout(location = 3) in vec4 a_color1;\n";
     for (int i = 0; i < 8; ++i) s += "layout(location = " + n(4 + i) + ") in vec4 a_tex" + n(i) + ";\n";
     s += "uniform int u_bgra;\nuniform mat4 u_wv;\nuniform mat4 u_wvp;\nuniform mat3 u_nrm;\nuniform mat4 u_tex[8];\n"
-         "uniform vec4 u_viewport;\nuniform vec4 u_mat[5];\nuniform vec4 u_ambient;\n"
+         "uniform vec4 u_viewport;\nuniform float u_squeeze;\nuniform vec4 u_mat[5];\nuniform vec4 u_ambient;\n"
          "uniform vec4 u_lpos[8];\nuniform vec4 u_ldir[8];\nuniform vec4 u_ldiff[8];\nuniform vec4 u_lspec[8];\n"
          "uniform vec4 u_lamb[8];\nuniform vec4 u_latt[8];\nuniform vec4 u_fogv;\n";
     s += "out vec4 D3D_D0;\nout vec4 D3D_D1;\n";
@@ -30,6 +30,7 @@ std::string ffp_vertex_glsl(const FfpVsKey& k) {
     if (k.pretransformed) {
         s += "  float w = (a_pos.w == 0.0) ? 1.0 : 1.0 / a_pos.w;\n"
              "  vec2 ndc = ((a_pos.xy + 0.5) - u_viewport.xy) / u_viewport.zw * 2.0 - 1.0;\n"
+             "  ndc.x *= u_squeeze;  // 4:3 menus/HUD centred on a widescreen back buffer\n"
              "  gl_Position = vec4(ndc * w, (a_pos.z * 2.0 - 1.0) * w, w);\n";
     } else {
         s += k.pos_w ? "  vec4 P = a_pos;\n" : "  vec4 P = vec4(a_pos.xyz, 1.0);\n";

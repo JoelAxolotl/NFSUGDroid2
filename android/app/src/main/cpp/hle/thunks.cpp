@@ -183,9 +183,12 @@ void dispatch(cpu::Cpu& c) {
             LOGD("[t%u] %s(%08x, %08x, %08x, %08x) from %08x", c.thread_id, t.name, arg(c, 0), arg(c, 1),
                  arg(c, 2), arg(c, 3), ret_addr);
     }
-    __atomic_add_fetch(&c.in_host, 1, __ATOMIC_SEQ_CST);
+    // Only this thread writes in_host, so plain stores suffice (no atomic RMW): seq_cst
+    // store (stlr) pairs with the suspender's seq_cst store/load of suspend_req.
+    const uint32_t depth = __atomic_load_n(&c.in_host, __ATOMIC_RELAXED);
+    __atomic_store_n(&c.in_host, depth + 1, __ATOMIC_RELEASE);  // publishes prior guest writes
     t.fn(c);
-    __atomic_sub_fetch(&c.in_host, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&c.in_host, depth, __ATOMIC_SEQ_CST);
     if (c.stop != cpu::Stop::None) return;  // thread/process exit or fault inside the HLE call
     cpu::check_suspend(c);
     c.r[cpu::ESP] += 4 + t.arg_bytes;

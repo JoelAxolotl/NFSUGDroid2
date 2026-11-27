@@ -249,7 +249,7 @@ bool create_backbuffer(Device* d) {
     for (auto& r : d->rt) r = nullptr;
     d->rt[0] = d->backbuffer;
     d->ds = d->auto_depth;
-    d->targets_dirty = true;
+    invalidate_gl_state(d);  // binds bb_fbo below
     glBindFramebuffer(GL_FRAMEBUFFER, d->bb_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, d->backbuffer->gl_tex, 0);
     LOGI("back buffer %ux%u fmt %u, auto depth %s fmt %u", w, h, d->pp[2], d->pp[9] ? "yes" : "no", d->pp[10]);
@@ -293,8 +293,10 @@ void fill_caps(uint32_t p) {
     w(32, 0x000E2FF2);    // PrimitiveMiscCaps
     w(36, 0x07322191);    // RasterCaps
     w(40, 0xFF);          // ZCmpCaps
-    w(44, 0x3FFF);        // SrcBlendCaps
-    w(48, 0x3FFF);        // DestBlendCaps
+    // No D3DPBLENDCAPS_BLENDFACTOR (0x2000): the reported RADEON 9800 PRO (R300) lacks it, and NFSU2
+    // picks a different light-glow accumulation path without it (with it, glow decays to violet).
+    w(44, 0x1FFF);        // SrcBlendCaps
+    w(48, 0x1FFF);        // DestBlendCaps
     w(52, 0xFF);          // AlphaCmpCaps
     w(56, 0x00084208);    // ShadeCaps
     w(60, 0x0001EC05);    // TextureCaps (no POW2 restriction)
@@ -533,7 +535,7 @@ void readback(Surface* s) {
     std::vector<uint32_t> px((size_t)s->w * s->h);
     glReadPixels(0, 0, (GLsizei)s->w, (GLsizei)s->h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
     glDeleteFramebuffers(1, &fbo);
-    if (s->dev) s->dev->targets_dirty = true;
+    if (s->dev) invalidate_gl_state(s->dev);
     uint32_t bpp = bytes_per_pixel(s->format);
     for (size_t i = 0; i < px.size(); ++i) {
         uint32_t v = px[i];  // RGBA bytes -> D3D ARGB dword (BGRA bytes)
@@ -844,12 +846,20 @@ void copy_state(StateBlock* sb, const State& f, State& t) {
 
 void sb_Capture(cpu::Cpu& c) {
     StateBlock* sb = obj<StateBlock>(c);
+    if (__builtin_expect(capturing(), 0)) capture_note("StateBlock %p Capture", (void*)sb);
     copy_state(sb, sb->dev->st, sb->state);
     ret(c, D3D_OK);
 }
 void sb_Apply(cpu::Cpu& c) {
     StateBlock* sb = obj<StateBlock>(c);
     Device* d = sb->dev;
+    if (__builtin_expect(capturing(), 0)) {
+        std::string tex;
+        for (int i = 0; i < 8; ++i)
+            if (sb->mask.textures[i]) tex += " t" + std::to_string(i) + "=" + std::to_string(sb->state.textures[i] != 0);
+        capture_note("StateBlock %p Apply (%zu ranges)%s from %08x", (void*)sb, sb->ranges.size(), tex.c_str(),
+                     mem::rd32(c.r[cpu::ESP]));
+    }
     copy_state(sb, sb->state, d->target());
     if (StateMask* m = d->mask()) {  // applying while recording records the states
         m->rs |= sb->mask.rs;
@@ -917,6 +927,8 @@ void present_frame(Device* d) {
     uint64_t t0 = winu::mono_ns();
     gfx::present(d->bb_fbo, (int)d->backbuffer->w, (int)d->backbuffer->h);
     g_stats.ns_present += winu::mono_ns() - t0;
+    invalidate_gl_state(d);  // the present blit sets its own viewport/scissor
+    capture_frame_boundary(d);
     d->targets_dirty = true;  // present rebinds framebuffers
     d->frames++;
     d->stat_frames++;
@@ -1248,6 +1260,7 @@ void clear_rects(Device* d, uint32_t count, uint32_t rects, GLbitfield mask) {
 
 void dev_Clear(cpu::Cpu& c) {
     Device* d = dev(c);
+    invalidate_gl_state(d);  // changes masks and scissor
     uint32_t count = arg(c, 1), rects = arg(c, 2), flags = arg(c, 3), color = arg(c, 4);
     float z = as_f(arg(c, 5));
     uint32_t stencil = arg(c, 6);
@@ -1270,6 +1283,7 @@ void dev_Clear(cpu::Cpu& c) {
 
 void dev_ColorFill(cpu::Cpu& c) {
     Device* d = dev(c);
+    invalidate_gl_state(d);
     Surface* s = obj<Surface>(c, 1);
     uint32_t rect = arg(c, 2), color = arg(c, 3);
     if (!s) return ret(c, D3DERR_INVALIDCALL);
@@ -1452,6 +1466,9 @@ void dev_SetTexture(cpu::Cpu& c) {
     if (s < 20) {
         d->target().textures[s] = arg(c, 2);
         if (StateMask* m = d->mask()) m->textures.set(s);
+        if (__builtin_expect(capturing(), 0))
+            capture_note("SetTexture(%u, %08x)%s from %08x", s, arg(c, 2), d->recording ? " [recording]" : "",
+                         mem::rd32(c.r[cpu::ESP]));
     }
     ret(c, D3D_OK);
 }
@@ -1513,6 +1530,8 @@ void dev_DrawIndexedPrimitive(cpu::Cpu& c) {
     Device* d = dev(c);
     count_draw(d);
     // (Type, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount)
+    d->dip_min = arg(c, 3);
+    d->dip_num = arg(c, 4);
     draw(d, arg(c, 1), 0, arg(c, 6), true, (int32_t)arg(c, 2), arg(c, 5), 0, 0, 0, 0, 0);
     ret(c, D3D_OK);
 }
@@ -1722,6 +1741,7 @@ void dev_CreateQuery(cpu::Cpu& c) {
 
 void dev_StretchRect(cpu::Cpu& c) {
     Device* d = dev(c);
+    invalidate_gl_state(d);  // the blit disables scissor
     Surface* src = obj<Surface>(c, 1);
     Surface* dst = obj<Surface>(c, 3);
     if (!src || !dst || !gfx::make_current()) return ret(c, D3DERR_INVALIDCALL);

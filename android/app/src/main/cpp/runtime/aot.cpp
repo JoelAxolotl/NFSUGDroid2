@@ -116,6 +116,12 @@ void register_table(const Entry* entries, uint32_t count) {
 
 uint32_t translated_count() { return g_count; }
 
+void register_patch(uint32_t guest, Fn fn) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    uint32_t off = guest - detail::g_start;
+    if (detail::g_table && off < detail::g_size) detail::g_table[off] = fn;
+}
+
 namespace {
 void log_top(uint32_t* hist, const char* label, int top) {
     using namespace detail;

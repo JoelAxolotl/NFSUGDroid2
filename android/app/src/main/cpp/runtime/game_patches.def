@@ -1,0 +1,15 @@
+// Behaviour changes to SPEED2.EXE v1.2, applied by the runtime (no game bytes are shipped).
+//
+// PATCH(guest address, resume address, host function, original bytes at the address)
+//   resume 0: the host function replaces the whole guest function (it returns to the caller).
+//   otherwise: the host function replaces the instructions from the address up to `resume`.
+//
+// tools/recomp/recomp.py reads this file: it emits a call to the host function at each address
+// and refuses to run when the original bytes differ (another executable). The runtime registers
+// the same functions for the interpreter (runtime/game_patches.cpp).
+
+// Resolution option -> 16:9 sizes (the game only lists 4:3 ones).
+PATCH(0x005BF610, 0x00000000, patch_racing_resolution, "A11C0D870083F805")
+// View projection: Hor+ for wide viewports (keep the 4:3 vertical view, widen the horizontal one).
+PATCH(0x005C7F56, 0x005C7F64, patch_projection_aspect, "DB4018C74424200000803FDA7014")
+PATCH(0x005C7FE8, 0x005C7FEE, patch_projection_hscale, "D83D50427800")

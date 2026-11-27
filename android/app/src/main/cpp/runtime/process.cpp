@@ -18,6 +18,7 @@
 #include "hle/hle.h"
 #include "loader/pe_loader.h"
 #include "runtime/aot.h"
+#include "runtime/game_patches.h"
 #include "runtime/vfs.h"
 
 namespace proc {
@@ -335,6 +336,8 @@ bool boot(const Config& cfg, std::string& error) {
     loader::Image img;
     if (!loader::load_exe(exe, img, error)) return false;
     aot::init(img.text_start, img.text_end, exe.c_str());
+    // The 16:9 patches target this exact executable, like the recompiled code.
+    if (aot::native_enabled()) game::install_patches();
     setup_peb(img);
 
     Thread* main = new Thread();

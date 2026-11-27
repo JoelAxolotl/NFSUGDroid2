@@ -48,6 +48,30 @@ FLAG_NEUTRAL = {"mov", "movzx", "movsx", "lea", "push", "pop", "nop", "xchg", "n
                 "prefetchnta", "prefetcht0", "prefetcht1", "prefetcht2", "prefetch", "prefetchw"}
 NO_FALLTHROUGH = ("ret", "jmp", "hlt", "ud2", "int3", "retf", "iretd")
 
+# Host replacements (android/app/src/main/cpp/runtime/game_patches.def): address -> (resume, function).
+GAME_PATCHES = {}
+PATCH_DEF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "android", "app", "src", "main",
+                         "cpp", "runtime", "game_patches.def")
+
+
+def load_game_patches(img):
+    """Reads game_patches.def and checks each patch's original bytes in this executable."""
+    import re
+    if not os.path.exists(PATCH_DEF):
+        return
+    rx = re.compile(r'^PATCH\((0x[0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+),\s*(\w+),\s*"([0-9A-Fa-f]*)"\)')
+    for line in open(PATCH_DEF, encoding="utf-8"):
+        mt = rx.match(line.strip())
+        if not mt:
+            continue
+        addr, resume, fn, want = int(mt.group(1), 16), int(mt.group(2), 16), mt.group(3), bytes.fromhex(mt.group(4))
+        off = addr - img.t0
+        have = bytes(img.tdata[off:off + len(want)])
+        if have != want:
+            raise SystemExit("game patch %s: expected %s at %08X, found %s (unsupported SPEED2.EXE version)"
+                             % (fn, want.hex(), addr, have.hex()))
+        GAME_PATCHES[addr] = (resume, fn)
+
 
 def ins_prefixes(ins):
     raw = bytes(ins.bytes)
@@ -271,6 +295,8 @@ class Emitter:
 
     def flag_effect(self, ins, fused):
         """(use, def) flag groups of one instruction as emitted."""
+        if ins.address in GAME_PATCHES:
+            return FALL, 0
         m = ins.mnemonic
         ops = ins.operands
         cc = self.consumer_cc(ins)
@@ -319,6 +345,9 @@ class Emitter:
 
     def successors(self, a, ins):
         """Successor addresses; None stands for 'leaves the function'."""
+        if a in GAME_PATCHES and GAME_PATCHES[a][0]:
+            t = GAME_PATCHES[a][0]
+            return [t if t in self.f.insns else None]
         m = ins.mnemonic
         ops = ins.operands
         out = []
@@ -345,6 +374,9 @@ class Emitter:
                 cur = None
             prev_end = a + ins.size
             m = ins.mnemonic
+            if a in GAME_PATCHES:
+                cur = None
+                continue
             cc = self.consumer_cc(ins)
             if cc is not None:
                 if cur is not None and not (cur[1] in ("inc", "dec") and cc in (2, 3, 6, 7)):
@@ -492,6 +524,15 @@ class Emitter:
     def emit(self, ins):
         m = ins.mnemonic
         a = ins.address
+        if a in GAME_PATCHES:
+            resume, fn = GAME_PATCHES[a]
+            self.L("  AOT_SYNC_OUT; c.eip = 0x%Xu; game::%s(c); if (c.stop != cpu::Stop::None) return;" % (a, fn))
+            if resume and resume in self.f.insns:
+                self.L("  AOT_SYNC_IN; goto L_%08X;" % resume)
+            else:
+                self.L("  return;  // the patch set EIP and the registers (no sync-out of stale locals)")
+            self.native += 1
+            return
         nxt = a + ins.size
         ops = ins.operands
         raw = bytes(ins.bytes)
@@ -743,6 +784,9 @@ class Emitter:
     def run(self):
         f = self.f
         addrs = sorted(f.insns)
+        for pa, (resume, _) in GAME_PATCHES.items():
+            if pa in f.insns and resume in f.insns:
+                f.leaders.add(resume)
         self.analyze_flags()
         self.L("void F_%08X(cpu::Cpu& c) {" % f.entry)
         self.L("  AOT_PROLOGUE;")
@@ -778,6 +822,8 @@ def main():
     a = ap.parse_args()
 
     img = Image(a.exe, a.reloc_rva)
+    load_game_patches(img)
+    print("game patches: %d (%s)" % (len(GAME_PATCHES), ", ".join(fn for _, fn in GAME_PATCHES.values())))
     rc = Recomp(img)
     profile = set()
     for pth in a.profile:
