@@ -81,6 +81,29 @@ void report_stop(Thread* t, cpu::Stop s) {
     }
 }
 
+// Guest threads run translated code, which maps guest calls to host calls, so
+// they need far deeper host stacks than Android's ~1 MiB default.
+void start_host_thread(std::function<void()> fn) {
+    constexpr size_t kHostStack = 16u << 20;
+    auto* heap_fn = new std::function<void()>(std::move(fn));
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, kHostStack);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t th;
+    int rc = pthread_create(&th, &attr, [](void* p) -> void* {
+        auto* f = static_cast<std::function<void()>*>(p);
+        (*f)();
+        delete f;
+        return nullptr;
+    }, heap_fn);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        LOGE("pthread_create failed: %d", rc);
+        delete heap_fn;
+    }
+}
+
 void thread_main(Thread* t) {
     name_host_thread("guest");
     t_thread = t;
@@ -192,7 +215,7 @@ uint32_t create_thread(uint32_t start, uint32_t param, uint32_t stack_size, bool
     t->refs.fetch_add(1);  // the running host thread holds a reference
     uint32_t h = kobj::add(t);
     if (tid_out) *tid_out = t->tid;
-    std::thread(thread_main, t).detach();
+    start_host_thread([t] { thread_main(t); });
     return h;
 }
 
@@ -230,12 +253,12 @@ void spawn_helper(const char* name, std::function<void(cpu::Cpu&)> body) {
         return;
     }
     std::string nm = name;
-    std::thread([t, nm, body = std::move(body)]() {
+    start_host_thread([t, nm, body = std::move(body)]() {
         name_host_thread(nm.c_str());
         t_thread = t;
         cpu::set_current(&t->ctx);
         body(t->ctx);
-    }).detach();
+    });
 }
 
 bool boot(const Config& cfg, std::string& error) {
@@ -260,7 +283,7 @@ bool boot(const Config& cfg, std::string& error) {
     std::string exe = vfs::to_host(std::string(kGameRootWin) + "\\" + kExeName);
     loader::Image img;
     if (!loader::load_exe(exe, img, error)) return false;
-    aot::init(img.text_start, img.text_end);
+    aot::init(img.text_start, img.text_end, exe.c_str());
     setup_peb(img);
 
     Thread* main = new Thread();
@@ -276,7 +299,7 @@ bool boot(const Config& cfg, std::string& error) {
 
     // The CRT entry point takes no arguments; give it the same frame as a
     // thread routine so a plain return exits the thread cleanly.
-    std::thread([main]() {
+    start_host_thread([main]() {
         name_host_thread("guest-main");
         t_thread = main;
         cpu::set_current(&main->ctx);
@@ -287,7 +310,7 @@ bool boot(const Config& cfg, std::string& error) {
         cpu::Stop s = cpu::run(c);
         report_stop(main, s);
         if (s == cpu::Stop::ThreadExit) exit_process(main->exit_code);
-    }).detach();
+    });
     return true;
 }
 

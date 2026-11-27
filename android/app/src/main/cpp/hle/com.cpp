@@ -1,15 +1,22 @@
 #include "hle/com.h"
 
+#include <atomic>
+#include <cstdlib>
 #include <mutex>
 #include <vector>
 
 #include "core/guest_heap.h"
+#include "core/log.h"
 
 namespace com {
 
 namespace {
+// Live objects by id (id = slot + 1). Lookups happen on every COM call from the
+// game (thousands per frame) and are lock-free; g_mu only guards id allocation.
+constexpr uint32_t kMaxObjects = 1u << 18;
+std::atomic<Object*> g_slots[kMaxObjects];
 std::mutex g_mu;
-std::vector<Object*> g_objects;  // id = index + 1
+uint32_t g_next_id = 1;
 std::vector<uint32_t> g_free_ids;
 
 struct DefaultRet {
@@ -63,24 +70,26 @@ uint32_t wrap(Object* host, uint32_t vtable, uint32_t payload_bytes) {
         if (!g_free_ids.empty()) {
             id = g_free_ids.back();
             g_free_ids.pop_back();
-            g_objects[id - 1] = host;
         } else {
-            g_objects.push_back(host);
-            id = (uint32_t)g_objects.size();
+            if (g_next_id > kMaxObjects) {
+                LOGE("COM: more than %u live objects", kMaxObjects);
+                abort();
+            }
+            id = g_next_id++;
         }
     }
+    host->guest = g;
     mem::wr32(g, vtable);
     mem::wr32(g + 4, id);
-    host->guest = g;
+    g_slots[id - 1].store(host, std::memory_order_release);
     return g;
 }
 
 Object* from_guest(uint32_t p) {
     if (!p) return nullptr;
     uint32_t id = mem::rd32(p + 4);
-    std::lock_guard<std::mutex> lk(g_mu);
-    if (id == 0 || id > g_objects.size()) return nullptr;
-    Object* o = g_objects[id - 1];
+    if (id == 0 || id > kMaxObjects) return nullptr;
+    Object* o = g_slots[id - 1].load(std::memory_order_acquire);
     return o && o->guest == p ? o : nullptr;
 }
 
@@ -91,12 +100,10 @@ uint32_t release(Object* o) {
     if (n == 0) {
         uint32_t g = o->guest;
         uint32_t id = mem::rd32(g + 4);
-        {
+        if (id && id <= kMaxObjects) {
+            g_slots[id - 1].store(nullptr, std::memory_order_release);
             std::lock_guard<std::mutex> lk(g_mu);
-            if (id && id <= g_objects.size()) {
-                g_objects[id - 1] = nullptr;
-                g_free_ids.push_back(id);
-            }
+            g_free_ids.push_back(id);
         }
         delete o;
         mem::wr32(g, 0);

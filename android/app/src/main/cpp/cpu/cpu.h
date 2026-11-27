@@ -194,6 +194,8 @@ void set_current(Cpu* c);
 
 // x87 helpers implemented in x87.cpp, used by the interpreter.
 bool exec_x87(Cpu& c, uint8_t op, uint32_t& pc, uint32_t seg_base);
+// x87 with the ModRM byte and effective address already decoded (used by translated code).
+bool x87_core(Cpu& c, uint8_t op, uint8_t modrm, uint32_t ea);
 // MMX / SSE-integer-on-MMX; `op` is the byte after 0x0F.
 bool exec_mmx(Cpu& c, uint8_t op, uint32_t& pc, uint32_t seg_base);
 void fpu_reset(Cpu& c);

@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstddef>
+#include <type_traits>
 #include <mutex>
 #include <vector>
 
@@ -791,56 +793,61 @@ const com::Method kQueryMethods[] = {
 };
 
 // ------------------------------------------------------------------ state blocks
-template <size_t N, typename T>
-void copy_bits(const std::bitset<N>& m, const T* from, T* to) {
-    for (size_t i = 0; i < N; ++i)
-        if (m[i]) to[i] = from[i];
+static_assert(std::is_trivially_copyable<State>::value, "state blocks copy State bytewise");
+
+void compile_ranges(StateBlock* sb) {
+    std::vector<std::pair<uint32_t, uint32_t>>& r = sb->ranges;
+    r.clear();
+    auto add = [&](size_t off, size_t len) {
+        if (!r.empty() && r.back().first + r.back().second == off)
+            r.back().second += (uint32_t)len;
+        else
+            r.push_back({(uint32_t)off, (uint32_t)len});
+    };
+    const StateMask& m = sb->mask;
+#define RANGE(member) offsetof(State, member)
+    for (size_t i = 0; i < 256; ++i) if (m.rs[i]) add(RANGE(rs) + i * 4, 4);
+    for (size_t i = 0; i < 20 * 14; ++i) if (m.ss[i]) add(RANGE(ss) + i * 4, 4);
+    for (size_t i = 0; i < 8 * 33; ++i) if (m.tss[i]) add(RANGE(tss) + i * 4, 4);
+    for (size_t i = 0; i < 20; ++i) if (m.textures[i]) add(RANGE(textures) + i * 4, 4);
+    for (size_t i = 0; i < 16; ++i) if (m.streams[i]) add(RANGE(streams) + i * sizeof(Stream), sizeof(Stream));
+    if (m.indices) add(RANGE(indices), 4);
+    if (m.vdecl) { add(RANGE(vdecl), 4); add(RANGE(fvf), 4); }
+    if (m.vs) add(RANGE(vs), 4);
+    if (m.ps) add(RANGE(ps), 4);
+    for (size_t i = 0; i < 256; ++i) if (m.vs_f[i]) add(RANGE(vs_f) + i * 16, 16);
+    for (size_t i = 0; i < 16; ++i) if (m.vs_i[i]) add(RANGE(vs_i) + i * 16, 16);
+    for (size_t i = 0; i < 16; ++i) if (m.vs_b[i]) add(RANGE(vs_b) + i * 4, 4);
+    for (size_t i = 0; i < 224; ++i) if (m.ps_f[i]) add(RANGE(ps_f) + i * 16, 16);
+    for (size_t i = 0; i < 16; ++i) if (m.ps_i[i]) add(RANGE(ps_i) + i * 16, 16);
+    for (size_t i = 0; i < 16; ++i) if (m.ps_b[i]) add(RANGE(ps_b) + i * 4, 4);
+    if (m.viewport) add(RANGE(viewport), sizeof(State::viewport));
+    if (m.scissor) add(RANGE(scissor), sizeof(State::scissor));
+    for (size_t i = 0; i < kTransforms; ++i) if (m.transforms[i]) add(RANGE(transforms) + i * 64, 64);
+    if (m.material) add(RANGE(material), sizeof(State::material));
+    for (size_t i = 0; i < 16; ++i) if (m.lights[i]) add(RANGE(lights) + i * sizeof(Light), sizeof(Light));
+    for (size_t i = 0; i < 6; ++i) if (m.clip[i]) add(RANGE(clip_planes) + i * 16, 16);
+#undef RANGE
+    sb->ranges_valid = true;
 }
 
-void copy_state(const State& f, State& t, const StateMask& m) {
-    copy_bits(m.rs, f.rs, t.rs);
-    for (size_t i = 0; i < 20 * 14; ++i)
-        if (m.ss[i]) t.ss[i / 14][i % 14] = f.ss[i / 14][i % 14];
-    for (size_t i = 0; i < 8 * 33; ++i)
-        if (m.tss[i]) t.tss[i / 33][i % 33] = f.tss[i / 33][i % 33];
-    copy_bits(m.textures, f.textures, t.textures);
-    copy_bits(m.streams, f.streams, t.streams);
-    if (m.indices) t.indices = f.indices;
-    if (m.vdecl) {
-        t.vdecl = f.vdecl;
-        t.fvf = f.fvf;
-    }
-    if (m.vs) t.vs = f.vs;
-    if (m.ps) t.ps = f.ps;
-    for (int i = 0; i < 256; ++i)
-        if (m.vs_f[i]) memcpy(t.vs_f[i], f.vs_f[i], 16);
-    for (int i = 0; i < 224; ++i)
-        if (m.ps_f[i]) memcpy(t.ps_f[i], f.ps_f[i], 16);
-    for (int i = 0; i < 16; ++i) {
-        if (m.vs_i[i]) memcpy(t.vs_i[i], f.vs_i[i], 16);
-        if (m.ps_i[i]) memcpy(t.ps_i[i], f.ps_i[i], 16);
-        if (m.vs_b[i]) t.vs_b[i] = f.vs_b[i];
-        if (m.ps_b[i]) t.ps_b[i] = f.ps_b[i];
-        if (m.lights[i]) t.lights[i] = f.lights[i];
-    }
-    if (m.viewport) memcpy(t.viewport, f.viewport, sizeof t.viewport);
-    if (m.scissor) memcpy(t.scissor, f.scissor, sizeof t.scissor);
-    if (m.material) memcpy(t.material, f.material, sizeof t.material);
-    for (int i = 0; i < kTransforms; ++i)
-        if (m.transforms[i]) memcpy(t.transforms[i], f.transforms[i], 64);
-    for (int i = 0; i < 6; ++i)
-        if (m.clip[i]) memcpy(t.clip_planes[i], f.clip_planes[i], 16);
+// Copies the parts of State selected by the block's mask.
+void copy_state(StateBlock* sb, const State& f, State& t) {
+    if (!sb->ranges_valid) compile_ranges(sb);
+    const uint8_t* src = reinterpret_cast<const uint8_t*>(&f);
+    uint8_t* dst = reinterpret_cast<uint8_t*>(&t);
+    for (const auto& [off, len] : sb->ranges) memcpy(dst + off, src + off, len);
 }
 
 void sb_Capture(cpu::Cpu& c) {
     StateBlock* sb = obj<StateBlock>(c);
-    copy_state(sb->dev->st, sb->state, sb->mask);
+    copy_state(sb, sb->dev->st, sb->state);
     ret(c, D3D_OK);
 }
 void sb_Apply(cpu::Cpu& c) {
     StateBlock* sb = obj<StateBlock>(c);
     Device* d = sb->dev;
-    copy_state(sb->state, d->target(), sb->mask);
+    copy_state(sb, sb->state, d->target());
     if (StateMask* m = d->mask()) {  // applying while recording records the states
         m->rs |= sb->mask.rs;
         m->ss |= sb->mask.ss;
@@ -924,6 +931,15 @@ void present_frame(Device* d) {
              (unsigned long long)(g.buf_bytes >> 10), (unsigned long long)(g.ring_bytes >> 10),
              (unsigned long long)g.orphans, (unsigned long long)g.readbacks);
         g_stats = GfxStats{};
+        // Instructions the interpreter executed on the render thread (should be
+        // near zero once the game runs as statically recompiled native code).
+        static uint64_t last_icount = 0;
+        if (cpu::Cpu* cc = cpu::current()) {
+            LOGI("  cpu/5s: %llu interpreted instructions (%u native functions loaded)",
+                 (unsigned long long)(cc->icount - last_icount), aot::translated_count());
+            last_icount = cc->icount;
+        }
+        aot::log_hot_spots(15);
         aot::dump_profile((proc::config().user_dir + "/aot_profile.txt").c_str());
         char buf[96];
         snprintf(buf, sizeof buf, "%.1f FPS", (double)d->stat_frames / secs);
@@ -1367,7 +1383,7 @@ void dev_CreateStateBlock(cpu::Cpu& c) {
     if (type == 2) sb->mask.set_pixel();
     else if (type == 3) sb->mask.set_vertex();
     else sb->mask.set_all();
-    copy_state(d->st, sb->state, sb->mask);
+    copy_state(sb, d->st, sb->state);
     com::wrap(sb, stateblock_vtable());
     write_ptr(arg(c, 2), sb);
     ret(c, D3D_OK);

@@ -76,6 +76,12 @@ inline uint32_t inc_dec(Cpu& c, uint32_t v, bool dec, int sz) {
 
 // Writes the given arithmetic flags eagerly, leaving the others intact.
 inline void put_flags(Cpu& c, uint32_t which, uint32_t values) {
+    if ((which & kArithFlags) == kArithFlags) {
+        // Every arithmetic flag is overwritten: the pending lazy flags are dead.
+        c.eflags = (c.eflags & ~which) | (values & which);
+        c.lf_op = LF_NONE;
+        return;
+    }
     uint32_t f = materialize_flags(c);
     c.eflags = (f & ~which) | (values & which);
 }

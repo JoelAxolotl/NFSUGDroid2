@@ -40,18 +40,26 @@ void game_keys_locked(uint8_t keys[256]) {
     auto press = [&](int dik, bool on) {
         if (on) keys[dik] = 0x80;
     };
-    press(0xC8, (p.buttons & kDpadUp) || p.ly < -0.5f || p.rt > 0.3f);   // Up: menus / throttle
-    press(0xD0, (p.buttons & kDpadDown) || p.ly > 0.5f || p.lt > 0.3f);  // Down: menus / brake
-    press(0xCB, (p.buttons & kDpadLeft) || p.lx < -0.35f);               // Left
-    press(0xCD, (p.buttons & kDpadRight) || p.lx > 0.35f);               // Right
-    press(0x1C, (p.buttons & kA) || (p.buttons & kOk));                  // Enter: accept
-    press(0x01, (p.buttons & kB) || (p.buttons & kStart));               // Esc: back / pause
-    press(0x39, p.buttons & kX);                                         // Space: e-brake
-    press(0x38, p.buttons & kA);                                         // Left Alt: nitrous
-    press(0x2E, p.buttons & kY);                                         // C: camera
-    press(0x2D, p.buttons & kBack);                                      // X: look back
-    press(0x2C, p.buttons & kLB);                                        // Z: shift down
-    press(0x1E, p.buttons & kRB);                                        // A: shift up
+    // Keys are NFSU2's default keyboard bindings, taken from the DirectInput
+    // action map the game registers (appdata: 1 throttle, 2 brake, 3/4 steer,
+    // 5 handbrake, 6 nitrous, 7 shift up, 8 shift down, 9 look back, 10 camera,
+    // 12 pause). The stick only steers (its Y axis must not touch the throttle).
+    // In the driving action map the game marks Up as DIA_APPNOMAP for Throttle,
+    // so throttle (and, symmetrically, brake) also press the WASD binding.
+    press(0xC8, (p.buttons & kDpadUp) || p.rt > 0.3f);       // Up: throttle / menu up
+    press(0x11, p.rt > 0.3f);                                // W: throttle (driving map)
+    press(0xD0, (p.buttons & kDpadDown) || p.lt > 0.3f);     // Down: brake-reverse / menu down
+    press(0x1F, p.lt > 0.3f);                                // S: brake-reverse (driving map)
+    press(0xCB, (p.buttons & kDpadLeft) || p.lx < -0.35f);   // Left: steer / menu left
+    press(0xCD, (p.buttons & kDpadRight) || p.lx > 0.35f);   // Right: steer / menu right
+    press(0x1C, (p.buttons & kA) || (p.buttons & kOk));      // Enter: accept
+    press(0x01, (p.buttons & kB) || (p.buttons & kStart));   // Esc: back / pause
+    press(0x39, p.buttons & kX);                             // Space: handbrake
+    press(0x38, p.buttons & kA);                             // Left Alt: nitrous
+    press(0x2A, p.buttons & kRB);                            // Left Shift: shift up
+    press(0x1D, p.buttons & kLB);                            // Left Ctrl: shift down
+    press(0x30, p.buttons & kBack);                          // B: look back
+    press(0x2E, p.buttons & kY);                             // C: camera
 }
 
 // Records transitions of the game-visible keyboard. Called with g_mu held.

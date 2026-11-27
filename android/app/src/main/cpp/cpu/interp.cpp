@@ -903,13 +903,22 @@ void reset(Cpu& c) {
     fpu_reset(c);
 }
 
+thread_local bool t_interpreting = false;
+
 // One dispatch step: HLE thunk, translated function, or one interpreted instruction.
 inline void dispatch_one(Cpu& c) {
     if (c.eip - hle::kThunkBase < hle::kThunkSpan) {
         hle::dispatch(c);
+        t_interpreting = false;
     } else if (aot::Fn fn = aot::lookup(c.eip)) {
         fn(c);
+        t_interpreting = false;
     } else {
+        if (!t_interpreting) {
+            aot::note_interp_entry(c.eip);
+            t_interpreting = true;
+        }
+        aot::note_interpreted(c.eip);
         step(c);
         ++c.icount;
     }
@@ -929,13 +938,16 @@ Stop run(Cpu& c) {
 }
 
 void run_until(Cpu& c, uint32_t ret_eip, uint32_t ret_esp) {
-    while (!(c.eip == ret_eip && c.r[ESP] == ret_esp)) {
+    // A stdcall callee pops its arguments, so the caller's frame is reached
+    // with ESP >= ret_esp; recursive returns to the same address are deeper.
+    while (!(c.eip == ret_eip && c.r[ESP] >= ret_esp)) {
         dispatch_one(c);
         if (c.stop != Stop::None) return;
     }
 }
 
 void step_one(Cpu& c) {
+    aot::note_interpreted(c.eip);
     step(c);
     ++c.icount;
 }

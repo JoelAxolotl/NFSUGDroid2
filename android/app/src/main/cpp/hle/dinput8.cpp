@@ -39,6 +39,12 @@ const uint32_t GUID_POV[4] = {0xA36D02F2, 0x11CFC9F3, 0x4544C7BF, 0x00005453};
 
 enum class Kind { Keyboard, Mouse, Pad };
 
+// Input mode. The touch overlay and physical controllers drive the game through
+// its keyboard bindings (platform/input.cpp game_keys). The DirectInput joystick
+// stays hidden until its axes/buttons are matched to the game's controller
+// configuration: with default mappings its centred axes read as part throttle.
+constexpr bool kExposeGamepad = false;
+
 struct DInput : com::Object {};
 
 // One action bound by SetActionMap: the game's uAppData for a device object.
@@ -173,6 +179,7 @@ void di_EnumDevices(cpu::Cpu& c) {
         uint32_t t = type & 0xFF;
         bool match = t == 0 || t == d.cls || t == (d.devtype & 0xFF);
         if (!match) continue;
+        if (d.g == GUID_Pad && !kExposeGamepad) continue;
         fill_instance(inst, d.g, d.prod, d.devtype, d.name);
         uint32_t r = hle::call_guest(c, cb, {inst, ref});
         if (c.stop != cpu::Stop::None) return;
@@ -366,6 +373,8 @@ void dev_GetDeviceData(cpu::Cpu& c) {
             } else {
                 emit(ev.dik, data, 0xFFFFFFFFu);
             }
+            LOGI("input: dinput kbd %p event dik=%02x %s (mapped=%d, delivered=%u, peek=%d)", (void*)d, ev.dik,
+                 ev.down ? "down" : "up", d->action_mapped ? 1 : 0, n, peek ? 1 : 0);
         }
         if (!peek) d->key_cursor = cursor;
     }
@@ -485,6 +494,14 @@ uint32_t build_keyboard_map(uint32_t f) {
 void dev_BuildActionMap(cpu::Cpu& c) {
     Device* d = dv(c);
     uint32_t f = arg(c, 1);
+    {
+        static std::vector<uint32_t> seen;
+        if (std::find(seen.begin(), seen.end(), f) == seen.end()) {
+            seen.push_back(f);
+            LOGI("DirectInput BuildActionMap format @%08x:", f);
+            log_action_format(f);
+        }
+    }
     uint32_t mapped = d->kind == Kind::Keyboard ? build_keyboard_map(f) : 0;
     LOGI("DirectInput BuildActionMap: %u actions mapped to the %s", mapped,
          d->kind == Kind::Keyboard ? "keyboard" : "device");

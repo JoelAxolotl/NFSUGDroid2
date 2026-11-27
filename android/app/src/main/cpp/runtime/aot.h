@@ -19,8 +19,16 @@ struct Entry {
     Fn fn;
 };
 
-// Covers the executable image; must run before any guest code.
-void init(uint32_t code_start, uint32_t code_end);
+// Covers the executable image; must run before any guest code. The native code
+// is only enabled when `exe_path` is the exact executable it was recompiled from
+// (see set_source_identity); otherwise the game runs on the interpreter.
+void init(uint32_t code_start, uint32_t code_end, const char* exe_path);
+
+// Recorded by the generated manifest (generated/aot_manifest.cpp).
+void set_source_identity(uint32_t size, uint64_t fnv1a64);
+
+// Result of the identity check, for the UI.
+bool native_enabled();
 
 // Registers a generated table (called from generated code at load time).
 void register_table(const Entry* entries, uint32_t count);
@@ -45,6 +53,24 @@ inline void note_call(uint32_t target) {
 
 // Writes the profile (one hex address per line), merged with the existing file.
 void dump_profile(const char* path);
+
+// Interpreter hot spots (16-byte buckets over the code range), to find code
+// that still runs outside the recompiled functions.
+namespace detail {
+extern uint32_t* g_hot;
+extern uint32_t* g_entry;
+}
+inline void note_interpreted(uint32_t eip) {
+    uint32_t off = eip - detail::g_start;
+    if (off < detail::g_size) ++detail::g_hot[off >> 4];
+}
+// Where an interpreted run begins (the address control was handed to the interpreter).
+inline void note_interp_entry(uint32_t eip) {
+    uint32_t off = eip - detail::g_start;
+    if (off < detail::g_size) ++detail::g_entry[off >> 4];
+}
+// Logs the top buckets since the last call and resets the counters.
+void log_hot_spots(int top);
 
 uint32_t translated_count();
 

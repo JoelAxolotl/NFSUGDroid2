@@ -1,3 +1,6 @@
 .toolchain
 .venv
+./android/.gradle
+android/.gradle
+.gradle
 Tasks

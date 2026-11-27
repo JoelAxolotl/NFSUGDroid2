@@ -12,6 +12,38 @@ on arm64 Android. Test device: Poco X6 Pro 5G (Dimensity 8300, Mali-G615, Androi
 | `tools/pe_survey.py`, `tools/isa_census.py` | PE/import survey and instruction census of SPEED2.EXE |
 | `analysis/` | generated survey output |
 
+## Distribution model: bring your own game
+
+This project ships **no game code or data**. It provides the translation layer
+(runtime, Win32/DirectX on Android, input, audio) and a **static recompiler**.
+Each user builds their own APK from their own official install:
+
+```powershell
+tools/build_apk.ps1 -GameDir "D:\Games\NFS Underground 2" -Install -PushData
+```
+
+`tools/recomp/recomp.py` reads the user's `SPEED2.EXE` **once, on their PC**, and
+emits C++ into `android/app/src/main/cpp/generated/`, which clang compiles to
+native ARM64 inside the APK. That generated code is derived from the user's copy
+of the game: it must never be committed or published, and neither may the
+resulting APK. The build records the exact EXE it was made from (size +
+FNV-1a 64); at boot the runtime verifies the `SPEED2.EXE` on the device and only
+enables the native code on a match, otherwise it falls back to the interpreter.
+
+## Static recompilation
+
+- Discovery: entry point, every code pointer in the relocation table (recovered from
+  the unnamed section at RVA 0x4F5000), call targets to a fixed point, switch tables
+  via relocated jump-table data, plus `user/aot_profile.txt` (call targets observed on
+  device) - ~18.6k functions, 1.18M instructions.
+- Emission: one C++ function per guest function; basic blocks are `goto` labels, direct
+  calls are direct C++ calls, guest registers live in host locals, and instruction
+  semantics come from the same helpers as the interpreter (`cpu/ops.h`, `cpu/x87_ops.h`).
+  96% of instructions are emitted natively; the rest are single-stepped by the
+  interpreter in place, and unresolvable control flow returns to the dispatcher.
+- Nothing is translated at runtime; the interpreter only covers what the static pass
+  could not prove (the FPS log reports `cpu/5s: N interpreted instructions`).
+
 ## Build and run
 
 ```powershell
@@ -55,7 +87,36 @@ as an Xbox-360-style joystick (X/Y left stick, Z triggers, Rx/Ry right stick, 10
 also mirrors it onto keyboard keys (arrows, Enter, Esc, Space, Alt, …) for menus and default controls.
 Physical keyboards map to DIK scan codes.
 
-## Status (2026-11-27)
+## Status (2026-11-27, update)
+
+- Game code runs as statically recompiled native ARM64 (verified against the user's EXE at boot);
+  the interpreter executes ~0.01% of instructions. Menus 45-60 FPS.
+- Rendering: D3D9 -> GLES 3.2 (shader translator, fixed-function emulation, DXT decode). Audio via AAudio.
+- Controls (keyboard mode, matching the game's own DirectInput action maps): GAS = Up+W, BRAKE = Down+S,
+  stick/D-pad = arrows, E-BRK = Space, NOS = Left Alt (+Enter in menus), GEAR = Left Shift / Left Ctrl,
+  CAM = C, BACK/pause = Esc, OK = Enter. The DirectInput gamepad is hidden (`kExposeGamepad`) until it is
+  matched to the game's controller configuration.
+
+### Performance notes (2026-11-27, free-roam)
+
+Profiled on device with `simpleperf record --app com.rea.nfsug2` (symbols via the NDK's
+`binary_cache_builder.py -lib android/app/build/intermediates/merged_native_libs/debug`).
+
+| Change | Effect |
+|---|---|
+| x87 core is an `always_inline` header (`cpu/x87_ops.h` `x87_exec`); generated code passes constant op/modrm so each FPU instruction folds to its own case | removed 31% of main-thread time; driving 21 → ~55 FPS |
+| Flag liveness + producer/branch fusion in `recomp.py` (`analyze_flags`): 85% of flag producers emit no flags, 100k `jcc` become direct compares (`aotrt::fc_*`) | removed lazy-flag materialization (6.7%) |
+| `put_flags`/`fcomi` skip materialization when all flags are overwritten | |
+| State blocks compiled to memcpy ranges | removed `copy_state` (2%) |
+| Lock-free COM id lookup, sampled draw timing | targets ~9% mutex/clock overhead (pending measurement) |
+
+`tools/tests/fused_flags_test.cpp` checks the fused conditions against the interpreter's
+lazy flags (49M cases); build it with the NDK clang for `aarch64-linux-android29` and run via adb.
+
+Next: the audio-decoder thread (0x72xxxx–0x73xxxx) still interprets its MMX code; Mali driver
+time (~17%) from ~800 draws/frame could be cut with GL state caching.
+
+## Status (2026-11-27, first boot)
 
 - Boots to the game's main loop on the device: CRT init, registry, CD check (`foobar` marker),
   worker threads, D3D9 device (640x480), DirectInput, DirectSound → AAudio. Main loop runs at

@@ -140,6 +140,10 @@ struct StateBlock : com::Object {
     Device* dev = nullptr;
     State state;
     StateMask mask;
+    // The mask compiled to merged byte ranges of State, so Capture/Apply are a few
+    // memcpys instead of a per-bit walk. Rebuilt after the mask changes.
+    std::vector<std::pair<uint32_t, uint32_t>> ranges;  // offset, length
+    bool ranges_valid = false;
 };
 
 struct SwapChain : com::Object {
@@ -171,7 +175,11 @@ struct Device : com::Object {
 
     // State writes go to the recording block while one is open (D3D9 semantics).
     State& target() { return recording ? recording->state : st; }
-    StateMask* mask() { return recording ? &recording->mask : nullptr; }
+    StateMask* mask() {
+        if (!recording) return nullptr;
+        recording->ranges_valid = false;
+        return &recording->mask;
+    }
 };
 
 // Draw path (d3d9_draw.cpp).

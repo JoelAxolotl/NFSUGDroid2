@@ -852,9 +852,10 @@ void upload_texture(Texture* t) {
     }
     bool any = false;
     static std::vector<uint8_t> buf;
-    uint64_t t0 = now_ns();
+    uint64_t t0 = 0;
     for (Surface* s : t->surfaces) {
         if (!s->dirty || !s->mem) continue;
+        if (!t0) t0 = now_ns();  // only time actual uploads
         g_stats.tex_uploads++;
         g_stats.tex_bytes += (uint64_t)s->w * s->h * 4;
         texconv::convert(t->format, mem::ptr(s->mem), s->w, s->h, buf);
@@ -864,7 +865,7 @@ void upload_texture(Texture* t) {
         any = true;
     }
     if (any && (t->usage & USAGE_AUTOGENMIPMAP) && t->levels > 1 && !gf.direct) glGenerateMipmap(target);
-    g_stats.ns_upload += now_ns() - t0;
+    if (t0) g_stats.ns_upload += now_ns() - t0;
 }
 
 GLuint surface_gl_texture(Surface* s) {
@@ -899,10 +900,15 @@ void draw(Device* d, uint32_t prim, uint32_t start_vertex, uint32_t prim_count, 
           uint32_t start_index, uint32_t up_vertices, uint32_t up_stride, uint32_t up_indices, uint32_t up_index_fmt,
           uint32_t up_vertex_count) {
     if (!prim_count || !gfx::make_current()) return;
+    // Draw time is sampled on one draw in 16 (and scaled) to keep clock reads off the hot path.
+    static uint32_t s_draw_seq = 0;
     struct Timer {
-        uint64_t t0 = now_ns();
-        ~Timer() { g_stats.ns_draw += now_ns() - t0; }
-    } timer;
+        uint64_t t0;
+        explicit Timer(bool on) : t0(on ? now_ns() : 0) {}
+        ~Timer() {
+            if (t0) g_stats.ns_draw += (now_ns() - t0) * 16;
+        }
+    } timer((++s_draw_seq & 15) == 0);
     DrawCache* dc = d->cache;
     const State& s = d->st;
     glBindVertexArray(dc->vao);
